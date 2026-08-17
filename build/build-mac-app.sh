@@ -25,9 +25,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>DeepSeek Harness 启动器</string>
+	<string>黑鲸启动器</string>
 	<key>CFBundleDisplayName</key>
-	<string>DeepSeek Harness 启动器</string>
+	<string>黑鲸启动器</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

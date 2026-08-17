@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1111,6 +1111,120 @@ async function getPluginDetail(repo) {
   };
 }
 
+// ================================================================ 登录与鉴权
+const AUTH_PATH = path.join(DATA_DIR, 'auth.json');
+let authStore = loadJSON(AUTH_PATH, {});
+let deviceLogin = null;
+
+function saveAuth() {
+  try { saveJSON(AUTH_PATH, authStore); } catch (e) {}
+}
+function authSnapshot() {
+  const wc = (config.auth && config.auth.wechat) || {};
+  const wechatConfigured = !!(wc.appid && wc.secret);
+  return {
+    loggedIn: !!(authStore && authStore.user && authStore.user.login),
+    user: (authStore && authStore.user) || null,
+    provider: (authStore && authStore.provider) || null,
+    device: deviceLogin ? {
+      code: deviceLogin.user_code,
+      url: deviceLogin.verification_uri,
+      expiresIn: Math.max(0, Math.round((deviceLogin.expiresAt - Date.now()) / 1000)),
+    } : null,
+    wechatConfigured: wechatConfigured,
+  };
+}
+function ghPostSmart(urlStr, bodyStr) {
+  const doPost = (pinned) => new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const req = https.request({
+      host: pinned ? '20.27.177.113' : u.hostname,
+      servername: u.hostname,
+      port: 443,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        Host: u.hostname,
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(bodyStr),
+        'User-Agent': 'dsh-launcher/' + VERSION,
+      },
+      timeout: 20000,
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: b }));
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.write(bodyStr);
+    req.end();
+  });
+  return doPost(false).catch(() => doPost(true));
+}
+function ghUser(token) {
+  return new Promise((resolve, reject) => {
+    https.get('https://api.github.com/user', {
+      headers: { 'User-Agent': 'dsh-launcher/' + VERSION, Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token },
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error('token 无效 (HTTP ' + res.statusCode + ')'));
+        try {
+          const j = JSON.parse(b);
+          resolve({ login: j.login, name: j.name || j.login, avatar: j.avatar_url || '' });
+        } catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+async function startDeviceLogin() {
+  const r = await ghPostSmart(
+    'https://github.com/login/device/code',
+    'client_id=178c6fc778ccc68e1d6a&scope=read:user'
+  );
+  if (r.status !== 200) throw new Error('启动扫码登录失败 (HTTP ' + r.status + ')');
+  const j = JSON.parse(r.body);
+  deviceLogin = {
+    device_code: j.device_code,
+    user_code: j.user_code,
+    verification_uri: j.verification_uri,
+    interval: j.interval || 5,
+    expiresAt: Date.now() + (j.expires_in || 899) * 1000,
+  };
+  return deviceLogin;
+}
+async function pollDeviceLogin() {
+  if (!deviceLogin) return null;
+  if (Date.now() > deviceLogin.expiresAt) {
+    deviceLogin = null;
+    return { expired: true };
+  }
+  const r = await ghPostSmart(
+    'https://github.com/login/oauth/access_token',
+    'client_id=178c6fc778ccc68e1d6a&device_code=' + encodeURIComponent(deviceLogin.device_code) +
+      '&grant_type=urn:ietf:params:oauth:grant-type:device_code'
+  );
+  if (r.status !== 200) return null;
+  let j = {};
+  try { j = JSON.parse(r.body); } catch (e) {}
+  if (j.access_token) {
+    const user = await ghUser(j.access_token);
+    authStore = { token: j.access_token, user: user, provider: 'github', at: Date.now() };
+    saveAuth();
+    deviceLogin = null;
+    return { loggedIn: true, user: user };
+  }
+  return null;
+}
+function logout() {
+  authStore = {};
+  saveAuth();
+  deviceLogin = null;
+}
+
 // ================================================================ 用户评分与评论(本机存储)
 const REVIEWS_PATH = path.join(DATA_DIR, 'reviews.json');
 let reviewsStore = loadJSON(REVIEWS_PATH, {});
@@ -1135,8 +1249,14 @@ function reviewsSnapshot(repo) {
 function addReview(repo, body) {
   const text = String(body.text || '').trim().slice(0, 500);
   const rating = Math.max(0, Math.min(5, Math.round(Number(body.rating) || 0)));
-  const author = String(body.author || '').trim().slice(0, 40) || '匿名用户';
   if (!text && rating === 0) throw new Error('评论内容和评分至少填一项');
+  const user = authStore && authStore.user;
+  if (!user || !user.login) {
+    const err = new Error('请先登录后再评分或评论');
+    err.status = 401;
+    throw err;
+  }
+  const author = user.login;
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) throw new Error('bad repo');
   const entry = reviewsStore[repo] || { myRating: 0, comments: [] };
   if (!text) {
@@ -1150,6 +1270,7 @@ function addReview(repo, body) {
     text: text,
     rating: rating,
     author: author,
+    avatar: (user && user.avatar) || '',
     at: Date.now(),
     mine: true,
   };
@@ -1160,10 +1281,16 @@ function addReview(repo, body) {
   return item;
 }
 function deleteReview(repo, id) {
+  const user = authStore && authStore.user;
+  if (!user || !user.login) {
+    const err = new Error('请先登录');
+    err.status = 401;
+    throw err;
+  }
   const entry = reviewsStore[repo];
   if (!entry) return { ok: true };
   const before = entry.comments.length;
-  entry.comments = entry.comments.filter(c => !(c.id === id && c.mine));
+  entry.comments = entry.comments.filter(c => !(c.id === id && c.author === user.login));
   saveReviews();
   return { ok: true, removed: before - entry.comments.length };
 }
@@ -1403,14 +1530,19 @@ a:hover{text-decoration:underline}
 .cm-item{padding:10px 2px;border-bottom:1px solid var(--border-l1)}
 .cm-item:last-child{border-bottom:none}
 .cm-author{font-size:13px;font-weight:600}
-.cm-text{font-size:13px;color:var(--label-secondary);margin-top:4px;white-space:pre-wrap;word-break:break-word}`;
+.cm-text{font-size:13px;color:var(--label-secondary);margin-top:4px;white-space:pre-wrap;word-break:break-word}
+.login-chip{padding:10px 12px;border-top:1px solid var(--border-l1)}
+.avatar{width:22px;height:22px;border-radius:50%;background:var(--bg-layer-2);border:1px solid var(--border-l2);object-fit:cover;flex:none}
+.qr-img{width:200px;height:200px;border:1px solid var(--border-l2);border-radius:10px;background:#fff}
+.auth-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border-l2);border-radius:8px;margin-bottom:10px;text-align:left;width:100%;background:var(--bg-layer-1);cursor:pointer;font:inherit;color:inherit}
+.auth-row:hover{background:var(--bg-hover)}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
       <div class="brand-logo"><svg viewBox="0 0 50 50" fill="currentColor"><path d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/></svg></div>
       <div>
-        <div class="brand-title">DeepSeek Harness</div>
-        <div class="brand-sub">启动器 · 安装与启动</div>
+        <div class="brand-title">黑鲸启动器</div>
+        <div class="brand-sub">DeepSeek Harness Launcher</div>
       </div>
     </div>
     <nav class="nav">
@@ -1423,7 +1555,8 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
       <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
-    <div class="sidebar-foot" id="sidebarFoot">控制面板 v0.1.0</div>
+    <div class="login-chip" id="loginChip"><button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button></div>
+    <div class="sidebar-foot" id="sidebarFoot">黑鲸启动器 v0.4.0</div>
   </aside>
   <main class="main">
     <section class="view" id="view-install" hidden>
@@ -1633,6 +1766,13 @@ const PAGE_HTML = `<div class="app">
     </section>
   </main>
 </div>
+<div class="modal-overlay" id="loginModal" hidden>
+  <div class="modal-dialog" style="max-width:360px">
+    <div class="modal-title">登录「黑鲸启动器」</div>
+    <div id="loginBody" style="width:100%"></div>
+    <button class="btn outline sm" id="btnCloseLogin" style="margin-top:6px">关闭</button>
+  </div>
+</div>
 <div class="modal-overlay" id="previewModal" hidden>
   <div class="modal-dialog" style="padding:16px">
     <img class="preview-img" src="" alt="插件预览">
@@ -1714,7 +1854,7 @@ const PAGE_JS = `(function () {
       }
       $('#cfgPaths').textContent = '数据目录: ' + info.paths.dataDir + ' · 日志: ' + info.paths.log;
       $('#logPath').textContent = info.paths.log;
-      $('#sidebarFoot').innerHTML = '控制面板 v' + info.version + '<br>仅本机可访问';
+      $('#sidebarFoot').innerHTML = '黑鲸启动器 v' + info.version + '<br>仅本机可访问';
     }).catch(function () {});
   }
 
@@ -2072,21 +2212,23 @@ const PAGE_JS = `(function () {
       '<div class="card">' +
       '<div class="card-title">评论</div>' +
       '<div class="field">' +
+      '<div id="cmAuthHint" style="margin-bottom:8px;font-size:12px;color:var(--label-secondary)"></div>' +
       '<div class="star-pick" id="cmStars" style="margin-bottom:8px"></div>' +
       '<textarea id="cmText" rows="3" placeholder="写下你的使用体验、踩坑提醒或建议…" style="width:100%;max-width:560px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>' +
       '<div class="row" style="margin-top:8px">' +
-      '<div class="input-wrap" style="max-width:160px"><input id="cmAuthor" type="text" placeholder="昵称(可留空)"></div>' +
       '<button class="btn primary sm" id="cmSubmit">发布评论</button>' +
       '</div>' +
       '</div>' +
       '<div id="cmList" class="plugin-list" style="margin-top:6px"><span class="muted">还没有评论,来写第一条吧</span></div>' +
       '</div>';
     loadReviews(d.repo);
+    renderCommentAuth();
     var cmBtn = document.querySelector('#cmSubmit');
     if (cmBtn) {
       cmBtn.addEventListener('click', function () {
         var repo = window.__currentRepo;
         if (!repo) return;
+        if (!authUser) { toast('请先登录'); openLoginModal(); return; }
         var text = document.querySelector('#cmText').value.trim();
         if (!text && cmRating === 0) { toast('写点内容或打个分再发布'); return; }
         api('/api/reviews', {
@@ -2126,6 +2268,113 @@ const PAGE_JS = `(function () {
     }
   }
   var cmRating = 0;
+  // ---- 登录与鉴权 ----
+  var authUser = null;
+  var authPoll = null;
+  function loadAuth() {
+    return api('/api/auth/status').then(function (a) {
+      authUser = a.loggedIn ? a.user : null;
+      renderLoginChip();
+      renderCommentAuth();
+      return a;
+    }).catch(function () {});
+  }
+  function renderLoginChip() {
+    var chip = document.querySelector('#loginChip');
+    if (!chip) return;
+    if (authUser) {
+      chip.innerHTML = '<div class="row" style="gap:8px">' +
+        (authUser.avatar ? '<img class="avatar" src="' + authUser.avatar + '">' : '<span class="avatar"></span>') +
+        '<div style="flex:1;min-width:0;font-size:12px"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + authUser.name + '</div><div class="muted" style="font-size:10px">@' + authUser.login + '</div></div>' +
+        '<button class="btn outline sm" id="btnLogout" style="padding:0 8px">退出</button>' +
+        '</div>';
+      var lo = document.querySelector('#btnLogout');
+      if (lo) lo.addEventListener('click', function () {
+        api('/api/auth/logout', { method: 'POST' }).then(function () {
+          authUser = null;
+          renderLoginChip();
+          renderCommentAuth();
+          toast('已退出登录');
+        });
+      });
+    } else {
+      chip.innerHTML = '<button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button>';
+      var li = document.querySelector('#btnLogin');
+      if (li) li.addEventListener('click', openLoginModal);
+    }
+  }
+  function openLoginModal() {
+    document.querySelector('#loginModal').hidden = false;
+    renderLoginBody();
+  }
+  function renderLoginBody() {
+    var body = document.querySelector('#loginBody');
+    if (!body) return;
+    var h = '';
+    h += '<div class="muted" style="font-size:12px;margin-bottom:10px">登录后即可评分、发表评论(身份仅保存在本机)</div>';
+    h += '<button class="auth-row" id="authGithub"><span style="font-weight:600">GitHub 扫码登录</span><span class="muted" style="font-size:11px;margin-left:auto">推荐</span></button>';
+    h += '<div id="authDeviceArea" hidden style="text-align:center"></div>';
+    h += '<details style="margin-bottom:10px"><summary class="muted" style="font-size:12px;cursor:pointer">使用 GitHub 令牌登录</summary>' +
+      '<div class="input-wrap" style="margin-top:8px;max-width:100%"><input id="authToken" type="password" placeholder="ghp_..."></div>' +
+      '<button class="btn outline sm" id="btnAuthToken" style="margin-top:8px">登录</button></details>';
+    h += '<div class="muted" style="font-size:11px">微信扫码登录:需在「设置」页配置微信开放平台信息后自动启用。</div>';
+    body.innerHTML = h;
+    var gh = document.querySelector('#authGithub');
+    if (gh) gh.addEventListener('click', function () {
+      gh.disabled = true;
+      api('/api/auth/device', { method: 'POST' }).then(function (r) {
+        var area = document.querySelector('#authDeviceArea');
+        area.hidden = false;
+        area.innerHTML = '<img class="qr-img" src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(r.url) + '">' +
+          '<div style="margin-top:8px">打开页面后输入设备码:<br><b style="font-size:20px;letter-spacing:2px">' + r.code + '</b></div>' +
+          '<div class="muted" style="font-size:11px;margin-top:6px">手机扫码 → 输入上面的码 → 授权</div>';
+        if (authPoll) clearInterval(authPoll);
+        authPoll = setInterval(function () {
+          api('/api/auth/status').then(function (a) {
+            if (a.loggedIn) {
+              clearInterval(authPoll);
+              authPoll = null;
+              authUser = a.user;
+              renderLoginChip();
+              renderCommentAuth();
+              document.querySelector('#loginModal').hidden = true;
+              toast('登录成功: ' + a.user.name);
+              if (window.__currentRepo) loadReviews(window.__currentRepo);
+            }
+          });
+        }, 3000);
+      }).catch(function (e) {
+        toast(e.message);
+        gh.disabled = false;
+      });
+    });
+    var tb = document.querySelector('#btnAuthToken');
+    if (tb) tb.addEventListener('click', function () {
+      var t = document.querySelector('#authToken').value.trim();
+      if (!t) return;
+      api('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t }),
+      }).then(function (a) {
+        authUser = a.user;
+        renderLoginChip();
+        renderCommentAuth();
+        document.querySelector('#loginModal').hidden = true;
+        toast('登录成功: ' + a.user.name);
+        if (window.__currentRepo) loadReviews(window.__currentRepo);
+      }).catch(function (e) { toast('登录失败: ' + e.message); });
+    });
+  }
+  function renderCommentAuth() {
+    var el = document.querySelector('#cmAuthHint');
+    if (!el) return;
+    el.innerHTML = authUser
+      ? ('以 <b>' + authUser.name + '</b> 的身份参与评分与评论')
+      : '<button class="btn outline sm" id="cmLoginBtn">登录后参与评分与评论</button>';
+    var lb = document.querySelector('#cmLoginBtn');
+    if (lb) lb.addEventListener('click', openLoginModal);
+  }
   function starPickHtml(value) {
     var h = '';
     for (var i = 1; i <= 5; i++) {
@@ -2149,7 +2398,9 @@ const PAGE_JS = `(function () {
           var stars = '';
           for (var i = 1; i <= 5; i++) stars += '<span style="color:' + (i <= c.rating ? '#f5b301' : '#d8dee9') + '">★</span>';
           var del = c.mine ? '<a href="#" class="cm-del muted" data-id="' + c.id + '" style="font-size:11px;margin-left:auto;flex:none">删除</a>' : '';
+          var av = c.avatar ? '<img class="avatar" src="' + c.avatar + '" style="width:18px;height:18px">' : '';
           return '<div class="cm-item"><div class="row" style="gap:6px">' +
+            av +
             '<span class="cm-author">' + c.author + '</span>' +
             '<span style="font-size:12px">' + stars + '</span>' +
             '<span class="muted" style="font-size:11px">' + fmtTime(c.at) + '</span>' + del +
@@ -2168,6 +2419,7 @@ const PAGE_JS = `(function () {
       }
       document.querySelectorAll('#myStars .star-pick-item').forEach(function (s) {
         s.addEventListener('click', function () {
+          if (!authUser) { toast('请先登录'); openLoginModal(); return; }
           var v = Number(s.dataset.star);
           api('/api/reviews', {
             method: 'POST',
@@ -2187,6 +2439,12 @@ const PAGE_JS = `(function () {
       });
     }).catch(function () {});
   }
+  $('#btnCloseLogin').addEventListener('click', function () {
+    $('#loginModal').hidden = true;
+  });
+  $('#loginModal').addEventListener('click', function (e) {
+    if (e.target === this) this.hidden = true;
+  });
   $('#btnBackPlugin').addEventListener('click', function () {
     switchView('market');
   });
@@ -2223,6 +2481,7 @@ const PAGE_JS = `(function () {
   loadEnv();
   loadUpdate();
   loadDiscover();
+  loadAuth();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
@@ -2239,7 +2498,7 @@ const PAGE_JS = `(function () {
 const PAGE = [
   '<!doctype html><html lang="zh-CN"><head>',
   '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-  '<title>DeepSeek Harness 启动器</title>',
+  '<title>黑鲸启动器 · DeepSeek Harness</title>',
   '<link rel="icon" type="image/svg+xml" href="/favicon.svg">',
   '<style>', PAGE_CSS, '</style></head><body>',
   PAGE_HTML,
@@ -2340,14 +2599,71 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/reviews' && m === 'POST') {
       const body = JSON.parse(await readBody(req) || '{}');
       const repo = String(body.repo || '');
-      addReview(repo, body);
-      return sendJSON(res, 200, reviewsSnapshot(repo));
+      try {
+        addReview(repo, body);
+        return sendJSON(res, 200, reviewsSnapshot(repo));
+      } catch (e) {
+        return sendJSON(res, e.status || 500, { error: e.message });
+      }
     }
     if (p === '/api/reviews' && m === 'DELETE') {
       const repo = String(u.searchParams.get('repo') || '');
       const id = String(u.searchParams.get('id') || '');
-      deleteReview(repo, id);
-      return sendJSON(res, 200, reviewsSnapshot(repo));
+      try {
+        deleteReview(repo, id);
+        return sendJSON(res, 200, reviewsSnapshot(repo));
+      } catch (e) {
+        return sendJSON(res, e.status || 500, { error: e.message });
+      }
+    }
+    if (p === '/api/auth/status' && m === 'GET') {
+      await pollDeviceLogin();
+      return sendJSON(res, 200, authSnapshot());
+    }
+    if (p === '/api/auth/device' && m === 'POST') {
+      if (authStore && authStore.user) return sendJSON(res, 409, { error: '已登录' });
+      try {
+        const d = await startDeviceLogin();
+        return sendJSON(res, 200, { ok: true, code: d.user_code, url: d.verification_uri, expiresIn: Math.round((d.expiresAt - Date.now()) / 1000) });
+      } catch (e) {
+        return sendJSON(res, 500, { error: e.message });
+      }
+    }
+    if (p === '/api/auth/token' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const token = String(body.token || '').trim();
+      if (!token) return sendJSON(res, 400, { error: '缺少 token' });
+      try {
+        const user = await ghUser(token);
+        authStore = { token: token, user: user, provider: 'github', at: Date.now() };
+        saveAuth();
+        return sendJSON(res, 200, authSnapshot());
+      } catch (e) {
+        return sendJSON(res, 401, { error: e.message });
+      }
+    }
+    if (p === '/api/auth/logout' && m === 'POST') {
+      logout();
+      return sendJSON(res, 200, authSnapshot());
+    }
+    if (p === '/api/auth/wechat/callback' && m === 'GET') {
+      const wc = (config.auth && config.auth.wechat) || {};
+      const code = u.searchParams.get('code') || '';
+      if (!code || !wc.appid || !wc.secret) return sendJSON(res, 400, { error: '微信登录未配置或缺少 code' });
+      try {
+        const ex = await fetchText('https://api.weixin.qq.com/sns/oauth2/access_token?appid=' + encodeURIComponent(wc.appid) +
+          '&secret=' + encodeURIComponent(wc.secret) + '&code=' + encodeURIComponent(code) + '&grant_type=authorization_code');
+        const j = JSON.parse(ex);
+        if (!j.openid) throw new Error(j.errmsg || '获取 openid 失败');
+        authStore = {
+          token: '', user: { login: 'wechat_' + String(j.openid).slice(-8), name: '微信用户' + String(j.openid).slice(-6), avatar: '' },
+          provider: 'wechat', at: Date.now(),
+        };
+        saveAuth();
+        return send(res, 200, '<html><body style="font-family:sans-serif;text-align:center;padding-top:80px"><h3>登录成功 ✓</h3><p>请回到「黑鲸启动器」面板继续操作</p></body></html>', 'text/html; charset=utf-8');
+      } catch (e) {
+        return sendJSON(res, 502, { error: String(e && e.message || e) });
+      }
     }
     if (p === '/api/plugin-detail' && m === 'GET') {
       const repo = String(u.searchParams.get('repo') || '');
@@ -2398,12 +2714,12 @@ function ensureWindowsDesktopShortcut() {
       "$ErrorActionPreference='SilentlyContinue'",
       "$ws = New-Object -ComObject WScript.Shell",
       "$desktop = [Environment]::GetFolderPath('Desktop')",
-      "$lnk = Join-Path $desktop 'DeepSeek Harness 启动器.lnk'",
+      "$lnk = Join-Path $desktop '黑鲸启动器.lnk'",
       "$s = $ws.CreateShortcut($lnk)",
       "$s.TargetPath = '" + exe.replace(/'/g, "''") + "'",
       "$s.WorkingDirectory = '" + dir.replace(/'/g, "''") + "'",
       "$s.IconLocation = $s.TargetPath + ',0'",
-      "$s.Description = 'DeepSeek Harness 启动器'",
+      "$s.Description = '黑鲸启动器'",
       "$s.Save()",
     ].join('; ');
     const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {

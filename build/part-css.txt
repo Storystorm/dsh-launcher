@@ -122,3 +122,8 @@ a:hover{text-decoration:underline}
 .cm-item:last-child{border-bottom:none}
 .cm-author{font-size:13px;font-weight:600}
 .cm-text{font-size:13px;color:var(--label-secondary);margin-top:4px;white-space:pre-wrap;word-break:break-word}
+.login-chip{padding:10px 12px;border-top:1px solid var(--border-l1)}
+.avatar{width:22px;height:22px;border-radius:50%;background:var(--bg-layer-2);border:1px solid var(--border-l2);object-fit:cover;flex:none}
+.qr-img{width:200px;height:200px;border:1px solid var(--border-l2);border-radius:10px;background:#fff}
+.auth-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border-l2);border-radius:8px;margin-bottom:10px;text-align:left;width:100%;background:var(--bg-layer-1);cursor:pointer;font:inherit;color:inherit}
+.auth-row:hover{background:var(--bg-hover)}

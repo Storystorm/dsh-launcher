@@ -65,7 +65,7 @@
       }
       $('#cfgPaths').textContent = '数据目录: ' + info.paths.dataDir + ' · 日志: ' + info.paths.log;
       $('#logPath').textContent = info.paths.log;
-      $('#sidebarFoot').innerHTML = '控制面板 v' + info.version + '<br>仅本机可访问';
+      $('#sidebarFoot').innerHTML = '黑鲸启动器 v' + info.version + '<br>仅本机可访问';
     }).catch(function () {});
   }
 
@@ -423,21 +423,23 @@
       '<div class="card">' +
       '<div class="card-title">评论</div>' +
       '<div class="field">' +
+      '<div id="cmAuthHint" style="margin-bottom:8px;font-size:12px;color:var(--label-secondary)"></div>' +
       '<div class="star-pick" id="cmStars" style="margin-bottom:8px"></div>' +
       '<textarea id="cmText" rows="3" placeholder="写下你的使用体验、踩坑提醒或建议…" style="width:100%;max-width:560px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>' +
       '<div class="row" style="margin-top:8px">' +
-      '<div class="input-wrap" style="max-width:160px"><input id="cmAuthor" type="text" placeholder="昵称(可留空)"></div>' +
       '<button class="btn primary sm" id="cmSubmit">发布评论</button>' +
       '</div>' +
       '</div>' +
       '<div id="cmList" class="plugin-list" style="margin-top:6px"><span class="muted">还没有评论,来写第一条吧</span></div>' +
       '</div>';
     loadReviews(d.repo);
+    renderCommentAuth();
     var cmBtn = document.querySelector('#cmSubmit');
     if (cmBtn) {
       cmBtn.addEventListener('click', function () {
         var repo = window.__currentRepo;
         if (!repo) return;
+        if (!authUser) { toast('请先登录'); openLoginModal(); return; }
         var text = document.querySelector('#cmText').value.trim();
         if (!text && cmRating === 0) { toast('写点内容或打个分再发布'); return; }
         api('/api/reviews', {
@@ -477,6 +479,113 @@
     }
   }
   var cmRating = 0;
+  // ---- 登录与鉴权 ----
+  var authUser = null;
+  var authPoll = null;
+  function loadAuth() {
+    return api('/api/auth/status').then(function (a) {
+      authUser = a.loggedIn ? a.user : null;
+      renderLoginChip();
+      renderCommentAuth();
+      return a;
+    }).catch(function () {});
+  }
+  function renderLoginChip() {
+    var chip = document.querySelector('#loginChip');
+    if (!chip) return;
+    if (authUser) {
+      chip.innerHTML = '<div class="row" style="gap:8px">' +
+        (authUser.avatar ? '<img class="avatar" src="' + authUser.avatar + '">' : '<span class="avatar"></span>') +
+        '<div style="flex:1;min-width:0;font-size:12px"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + authUser.name + '</div><div class="muted" style="font-size:10px">@' + authUser.login + '</div></div>' +
+        '<button class="btn outline sm" id="btnLogout" style="padding:0 8px">退出</button>' +
+        '</div>';
+      var lo = document.querySelector('#btnLogout');
+      if (lo) lo.addEventListener('click', function () {
+        api('/api/auth/logout', { method: 'POST' }).then(function () {
+          authUser = null;
+          renderLoginChip();
+          renderCommentAuth();
+          toast('已退出登录');
+        });
+      });
+    } else {
+      chip.innerHTML = '<button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button>';
+      var li = document.querySelector('#btnLogin');
+      if (li) li.addEventListener('click', openLoginModal);
+    }
+  }
+  function openLoginModal() {
+    document.querySelector('#loginModal').hidden = false;
+    renderLoginBody();
+  }
+  function renderLoginBody() {
+    var body = document.querySelector('#loginBody');
+    if (!body) return;
+    var h = '';
+    h += '<div class="muted" style="font-size:12px;margin-bottom:10px">登录后即可评分、发表评论(身份仅保存在本机)</div>';
+    h += '<button class="auth-row" id="authGithub"><span style="font-weight:600">GitHub 扫码登录</span><span class="muted" style="font-size:11px;margin-left:auto">推荐</span></button>';
+    h += '<div id="authDeviceArea" hidden style="text-align:center"></div>';
+    h += '<details style="margin-bottom:10px"><summary class="muted" style="font-size:12px;cursor:pointer">使用 GitHub 令牌登录</summary>' +
+      '<div class="input-wrap" style="margin-top:8px;max-width:100%"><input id="authToken" type="password" placeholder="ghp_..."></div>' +
+      '<button class="btn outline sm" id="btnAuthToken" style="margin-top:8px">登录</button></details>';
+    h += '<div class="muted" style="font-size:11px">微信扫码登录:需在「设置」页配置微信开放平台信息后自动启用。</div>';
+    body.innerHTML = h;
+    var gh = document.querySelector('#authGithub');
+    if (gh) gh.addEventListener('click', function () {
+      gh.disabled = true;
+      api('/api/auth/device', { method: 'POST' }).then(function (r) {
+        var area = document.querySelector('#authDeviceArea');
+        area.hidden = false;
+        area.innerHTML = '<img class="qr-img" src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(r.url) + '">' +
+          '<div style="margin-top:8px">打开页面后输入设备码:<br><b style="font-size:20px;letter-spacing:2px">' + r.code + '</b></div>' +
+          '<div class="muted" style="font-size:11px;margin-top:6px">手机扫码 → 输入上面的码 → 授权</div>';
+        if (authPoll) clearInterval(authPoll);
+        authPoll = setInterval(function () {
+          api('/api/auth/status').then(function (a) {
+            if (a.loggedIn) {
+              clearInterval(authPoll);
+              authPoll = null;
+              authUser = a.user;
+              renderLoginChip();
+              renderCommentAuth();
+              document.querySelector('#loginModal').hidden = true;
+              toast('登录成功: ' + a.user.name);
+              if (window.__currentRepo) loadReviews(window.__currentRepo);
+            }
+          });
+        }, 3000);
+      }).catch(function (e) {
+        toast(e.message);
+        gh.disabled = false;
+      });
+    });
+    var tb = document.querySelector('#btnAuthToken');
+    if (tb) tb.addEventListener('click', function () {
+      var t = document.querySelector('#authToken').value.trim();
+      if (!t) return;
+      api('/api/auth/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: t }),
+      }).then(function (a) {
+        authUser = a.user;
+        renderLoginChip();
+        renderCommentAuth();
+        document.querySelector('#loginModal').hidden = true;
+        toast('登录成功: ' + a.user.name);
+        if (window.__currentRepo) loadReviews(window.__currentRepo);
+      }).catch(function (e) { toast('登录失败: ' + e.message); });
+    });
+  }
+  function renderCommentAuth() {
+    var el = document.querySelector('#cmAuthHint');
+    if (!el) return;
+    el.innerHTML = authUser
+      ? ('以 <b>' + authUser.name + '</b> 的身份参与评分与评论')
+      : '<button class="btn outline sm" id="cmLoginBtn">登录后参与评分与评论</button>';
+    var lb = document.querySelector('#cmLoginBtn');
+    if (lb) lb.addEventListener('click', openLoginModal);
+  }
   function starPickHtml(value) {
     var h = '';
     for (var i = 1; i <= 5; i++) {
@@ -500,7 +609,9 @@
           var stars = '';
           for (var i = 1; i <= 5; i++) stars += '<span style="color:' + (i <= c.rating ? '#f5b301' : '#d8dee9') + '">★</span>';
           var del = c.mine ? '<a href="#" class="cm-del muted" data-id="' + c.id + '" style="font-size:11px;margin-left:auto;flex:none">删除</a>' : '';
+          var av = c.avatar ? '<img class="avatar" src="' + c.avatar + '" style="width:18px;height:18px">' : '';
           return '<div class="cm-item"><div class="row" style="gap:6px">' +
+            av +
             '<span class="cm-author">' + c.author + '</span>' +
             '<span style="font-size:12px">' + stars + '</span>' +
             '<span class="muted" style="font-size:11px">' + fmtTime(c.at) + '</span>' + del +
@@ -519,6 +630,7 @@
       }
       document.querySelectorAll('#myStars .star-pick-item').forEach(function (s) {
         s.addEventListener('click', function () {
+          if (!authUser) { toast('请先登录'); openLoginModal(); return; }
           var v = Number(s.dataset.star);
           api('/api/reviews', {
             method: 'POST',
@@ -538,6 +650,12 @@
       });
     }).catch(function () {});
   }
+  $('#btnCloseLogin').addEventListener('click', function () {
+    $('#loginModal').hidden = true;
+  });
+  $('#loginModal').addEventListener('click', function (e) {
+    if (e.target === this) this.hidden = true;
+  });
   $('#btnBackPlugin').addEventListener('click', function () {
     switchView('market');
   });
@@ -574,6 +692,7 @@
   loadEnv();
   loadUpdate();
   loadDiscover();
+  loadAuth();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
