@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.2.2';
+const VERSION = '0.3.0';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1111,6 +1111,63 @@ async function getPluginDetail(repo) {
   };
 }
 
+// ================================================================ 用户评分与评论(本机存储)
+const REVIEWS_PATH = path.join(DATA_DIR, 'reviews.json');
+let reviewsStore = loadJSON(REVIEWS_PATH, {});
+
+function saveReviews() {
+  try { saveJSON(REVIEWS_PATH, reviewsStore); } catch (e) {}
+}
+function reviewsSnapshot(repo) {
+  const r = reviewsStore[repo] || { comments: [] };
+  const comments = (r.comments || []).slice(-200);
+  const rated = comments.filter(c => c.rating > 0);
+  const sum = rated.reduce((s, c) => s + c.rating, 0);
+  const avg = rated.length ? Math.round((sum / rated.length) * 10) / 10 : 0;
+  return {
+    repo: repo,
+    myRating: r.myRating || 0,
+    comments: comments,
+    avg: avg,
+    count: rated.length,
+  };
+}
+function addReview(repo, body) {
+  const text = String(body.text || '').trim().slice(0, 500);
+  const rating = Math.max(0, Math.min(5, Math.round(Number(body.rating) || 0)));
+  const author = String(body.author || '').trim().slice(0, 40) || '匿名用户';
+  if (!text && rating === 0) throw new Error('评论内容和评分至少填一项');
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) throw new Error('bad repo');
+  const entry = reviewsStore[repo] || { myRating: 0, comments: [] };
+  if (!text) {
+    if (rating > 0) entry.myRating = rating;
+    reviewsStore[repo] = entry;
+    saveReviews();
+    return { ratingOnly: true };
+  }
+  const item = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    text: text,
+    rating: rating,
+    author: author,
+    at: Date.now(),
+    mine: true,
+  };
+  entry.comments.push(item);
+  if (rating > 0) entry.myRating = rating;
+  reviewsStore[repo] = entry;
+  saveReviews();
+  return item;
+}
+function deleteReview(repo, id) {
+  const entry = reviewsStore[repo];
+  if (!entry) return { ok: true };
+  const before = entry.comments.length;
+  entry.comments = entry.comments.filter(c => !(c.id === id && c.mine));
+  saveReviews();
+  return { ok: true, removed: before - entry.comments.length };
+}
+
 // ================================================================ 插件预览图
 const pluginPreviewCache = {};
 const ogFallback = (repo) => 'https://opengraph.githubassets.com/1/' + repo;
@@ -1338,7 +1395,15 @@ a:hover{text-decoration:underline}
 .dim-fill{height:100%;border-radius:3px;background:var(--brand)}
 .dim-val{flex:none;width:30px;text-align:right;font-size:12px;color:var(--label-tertiary)}
 .review-list{margin:0;padding-left:18px}
-.review-list li{margin:4px 0;font-size:13px;line-height:20px}`;
+.review-list li{margin:4px 0;font-size:13px;line-height:20px}
+.star-pick{display:inline-flex;gap:2px}
+.star-pick-item{font-size:22px;color:#d8dee9;cursor:pointer;transition:color .1s}
+.star-pick-item:hover{color:#f5b301}
+.star-pick-item.on{color:#f5b301}
+.cm-item{padding:10px 2px;border-bottom:1px solid var(--border-l1)}
+.cm-item:last-child{border-bottom:none}
+.cm-author{font-size:13px;font-weight:600}
+.cm-text{font-size:13px;color:var(--label-secondary);margin-top:4px;white-space:pre-wrap;word-break:break-word}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -1937,6 +2002,8 @@ const PAGE_JS = `(function () {
   function renderPluginDetail(d) {
     var info = d.info || {};
     var rv = d.review || {};
+    window.__currentRepo = d.repo;
+    cmRating = 0;
     var thumb = document.createElement('div');
     var card = $('#pluginDetailCard');
     card.innerHTML =
@@ -1988,7 +2055,52 @@ const PAGE_JS = `(function () {
       '<div class="card">' +
       '<div class="card-title">简评</div>' +
       '<ul class="review-list">' + (rv.comments || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">用户评分</div>' +
+      '<div class="row" style="align-items:flex-start;gap:24px">' +
+      '<div class="score-box" style="width:110px">' +
+      '<div class="score-num" id="urAvg" style="font-size:32px">—</div>' +
+      '<div class="muted" style="font-size:11px" id="urCount">暂无评分</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:0">' +
+      '<div class="muted" style="font-size:12px;margin-bottom:6px">我的评分(点星即提交)</div>' +
+      '<div class="star-pick" id="myStars"></div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">评论</div>' +
+      '<div class="field">' +
+      '<div class="star-pick" id="cmStars" style="margin-bottom:8px"></div>' +
+      '<textarea id="cmText" rows="3" placeholder="写下你的使用体验、踩坑提醒或建议…" style="width:100%;max-width:560px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<div class="input-wrap" style="max-width:160px"><input id="cmAuthor" type="text" placeholder="昵称(可留空)"></div>' +
+      '<button class="btn primary sm" id="cmSubmit">发布评论</button>' +
+      '</div>' +
+      '</div>' +
+      '<div id="cmList" class="plugin-list" style="margin-top:6px"><span class="muted">还没有评论,来写第一条吧</span></div>' +
       '</div>';
+    loadReviews(d.repo);
+    var cmBtn = document.querySelector('#cmSubmit');
+    if (cmBtn) {
+      cmBtn.addEventListener('click', function () {
+        var repo = window.__currentRepo;
+        if (!repo) return;
+        var text = document.querySelector('#cmText').value.trim();
+        if (!text && cmRating === 0) { toast('写点内容或打个分再发布'); return; }
+        api('/api/reviews', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo: repo, text: text, rating: cmRating, author: document.querySelector('#cmAuthor').value.trim() }),
+        }).then(function () {
+          document.querySelector('#cmText').value = '';
+          cmRating = 0;
+          toast('评论已发布');
+          loadReviews(repo);
+        }).catch(function (e) { toast(e.message); });
+      });
+    }
     var ib = document.querySelector('#pdInstall');
     if (ib) {
       ib.addEventListener('click', function () {
@@ -2012,6 +2124,68 @@ const PAGE_JS = `(function () {
         });
       });
     }
+  }
+  var cmRating = 0;
+  function starPickHtml(value) {
+    var h = '';
+    for (var i = 1; i <= 5; i++) {
+      h += '<span class="star-pick-item' + (i <= value ? ' on' : '') + '" data-star="' + i + '">★</span>';
+    }
+    return h;
+  }
+  function fmtTime(t) {
+    var d = new Date(t);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function loadReviews(repo) {
+    return api('/api/reviews?repo=' + encodeURIComponent(repo)).then(function (r) {
+      $('#myStars').innerHTML = starPickHtml(r.myRating || 0);
+      $('#cmStars').innerHTML = starPickHtml(cmRating);
+      $('#urAvg').textContent = r.avg ? (r.avg + '') : '—';
+      $('#urCount').textContent = r.count ? (r.count + ' 人评分 · 平均 ' + r.avg + ' / 5') : '暂无评分';
+      if (r.comments && r.comments.length) {
+        $('#cmList').innerHTML = r.comments.slice().reverse().map(function (c) {
+          var stars = '';
+          for (var i = 1; i <= 5; i++) stars += '<span style="color:' + (i <= c.rating ? '#f5b301' : '#d8dee9') + '">★</span>';
+          var del = c.mine ? '<a href="#" class="cm-del muted" data-id="' + c.id + '" style="font-size:11px;margin-left:auto;flex:none">删除</a>' : '';
+          return '<div class="cm-item"><div class="row" style="gap:6px">' +
+            '<span class="cm-author">' + c.author + '</span>' +
+            '<span style="font-size:12px">' + stars + '</span>' +
+            '<span class="muted" style="font-size:11px">' + fmtTime(c.at) + '</span>' + del +
+            '</div><div class="cm-text">' + c.text + '</div></div>';
+        }).join('');
+        document.querySelectorAll('#cmList .cm-del').forEach(function (a) {
+          a.addEventListener('click', function (e) {
+            e.preventDefault();
+            api('/api/reviews?repo=' + encodeURIComponent(repo) + '&id=' + encodeURIComponent(a.dataset.id), { method: 'DELETE' })
+              .then(function (r2) { loadReviews(repo); toast('已删除'); })
+              .catch(function (err) { toast(err.message); });
+          });
+        });
+      } else {
+        $('#cmList').innerHTML = '<span class="muted">还没有评论,来写第一条吧</span>';
+      }
+      document.querySelectorAll('#myStars .star-pick-item').forEach(function (s) {
+        s.addEventListener('click', function () {
+          var v = Number(s.dataset.star);
+          api('/api/reviews', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo: repo, rating: v, text: '', author: '' }),
+          }).then(function () { loadReviews(repo); toast('已评 ' + v + ' 星'); })
+            .catch(function (e) { toast(e.message); });
+        });
+      });
+      document.querySelectorAll('#cmStars .star-pick-item').forEach(function (s) {
+        s.addEventListener('click', function () {
+          cmRating = Number(s.dataset.star);
+          document.querySelectorAll('#cmStars .star-pick-item').forEach(function (x) {
+            x.classList.toggle('on', Number(x.dataset.star) <= cmRating);
+          });
+        });
+      });
+    }).catch(function () {});
   }
   $('#btnBackPlugin').addEventListener('click', function () {
     switchView('market');
@@ -2157,6 +2331,23 @@ const server = http.createServer(async (req, res) => {
       const repo = String(u.searchParams.get('repo') || '');
       if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });
       return sendJSON(res, 200, { image: await getPluginPreview(repo) });
+    }
+    if (p === '/api/reviews' && m === 'GET') {
+      const repo = String(u.searchParams.get('repo') || '');
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });
+      return sendJSON(res, 200, reviewsSnapshot(repo));
+    }
+    if (p === '/api/reviews' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const repo = String(body.repo || '');
+      addReview(repo, body);
+      return sendJSON(res, 200, reviewsSnapshot(repo));
+    }
+    if (p === '/api/reviews' && m === 'DELETE') {
+      const repo = String(u.searchParams.get('repo') || '');
+      const id = String(u.searchParams.get('id') || '');
+      deleteReview(repo, id);
+      return sendJSON(res, 200, reviewsSnapshot(repo));
     }
     if (p === '/api/plugin-detail' && m === 'GET') {
       const repo = String(u.searchParams.get('repo') || '');

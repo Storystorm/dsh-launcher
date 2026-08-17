@@ -353,6 +353,8 @@
   function renderPluginDetail(d) {
     var info = d.info || {};
     var rv = d.review || {};
+    window.__currentRepo = d.repo;
+    cmRating = 0;
     var thumb = document.createElement('div');
     var card = $('#pluginDetailCard');
     card.innerHTML =
@@ -404,7 +406,52 @@
       '<div class="card">' +
       '<div class="card-title">简评</div>' +
       '<ul class="review-list">' + (rv.comments || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">用户评分</div>' +
+      '<div class="row" style="align-items:flex-start;gap:24px">' +
+      '<div class="score-box" style="width:110px">' +
+      '<div class="score-num" id="urAvg" style="font-size:32px">—</div>' +
+      '<div class="muted" style="font-size:11px" id="urCount">暂无评分</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:0">' +
+      '<div class="muted" style="font-size:12px;margin-bottom:6px">我的评分(点星即提交)</div>' +
+      '<div class="star-pick" id="myStars"></div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">评论</div>' +
+      '<div class="field">' +
+      '<div class="star-pick" id="cmStars" style="margin-bottom:8px"></div>' +
+      '<textarea id="cmText" rows="3" placeholder="写下你的使用体验、踩坑提醒或建议…" style="width:100%;max-width:560px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>' +
+      '<div class="row" style="margin-top:8px">' +
+      '<div class="input-wrap" style="max-width:160px"><input id="cmAuthor" type="text" placeholder="昵称(可留空)"></div>' +
+      '<button class="btn primary sm" id="cmSubmit">发布评论</button>' +
+      '</div>' +
+      '</div>' +
+      '<div id="cmList" class="plugin-list" style="margin-top:6px"><span class="muted">还没有评论,来写第一条吧</span></div>' +
       '</div>';
+    loadReviews(d.repo);
+    var cmBtn = document.querySelector('#cmSubmit');
+    if (cmBtn) {
+      cmBtn.addEventListener('click', function () {
+        var repo = window.__currentRepo;
+        if (!repo) return;
+        var text = document.querySelector('#cmText').value.trim();
+        if (!text && cmRating === 0) { toast('写点内容或打个分再发布'); return; }
+        api('/api/reviews', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo: repo, text: text, rating: cmRating, author: document.querySelector('#cmAuthor').value.trim() }),
+        }).then(function () {
+          document.querySelector('#cmText').value = '';
+          cmRating = 0;
+          toast('评论已发布');
+          loadReviews(repo);
+        }).catch(function (e) { toast(e.message); });
+      });
+    }
     var ib = document.querySelector('#pdInstall');
     if (ib) {
       ib.addEventListener('click', function () {
@@ -428,6 +475,68 @@
         });
       });
     }
+  }
+  var cmRating = 0;
+  function starPickHtml(value) {
+    var h = '';
+    for (var i = 1; i <= 5; i++) {
+      h += '<span class="star-pick-item' + (i <= value ? ' on' : '') + '" data-star="' + i + '">★</span>';
+    }
+    return h;
+  }
+  function fmtTime(t) {
+    var d = new Date(t);
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function loadReviews(repo) {
+    return api('/api/reviews?repo=' + encodeURIComponent(repo)).then(function (r) {
+      $('#myStars').innerHTML = starPickHtml(r.myRating || 0);
+      $('#cmStars').innerHTML = starPickHtml(cmRating);
+      $('#urAvg').textContent = r.avg ? (r.avg + '') : '—';
+      $('#urCount').textContent = r.count ? (r.count + ' 人评分 · 平均 ' + r.avg + ' / 5') : '暂无评分';
+      if (r.comments && r.comments.length) {
+        $('#cmList').innerHTML = r.comments.slice().reverse().map(function (c) {
+          var stars = '';
+          for (var i = 1; i <= 5; i++) stars += '<span style="color:' + (i <= c.rating ? '#f5b301' : '#d8dee9') + '">★</span>';
+          var del = c.mine ? '<a href="#" class="cm-del muted" data-id="' + c.id + '" style="font-size:11px;margin-left:auto;flex:none">删除</a>' : '';
+          return '<div class="cm-item"><div class="row" style="gap:6px">' +
+            '<span class="cm-author">' + c.author + '</span>' +
+            '<span style="font-size:12px">' + stars + '</span>' +
+            '<span class="muted" style="font-size:11px">' + fmtTime(c.at) + '</span>' + del +
+            '</div><div class="cm-text">' + c.text + '</div></div>';
+        }).join('');
+        document.querySelectorAll('#cmList .cm-del').forEach(function (a) {
+          a.addEventListener('click', function (e) {
+            e.preventDefault();
+            api('/api/reviews?repo=' + encodeURIComponent(repo) + '&id=' + encodeURIComponent(a.dataset.id), { method: 'DELETE' })
+              .then(function (r2) { loadReviews(repo); toast('已删除'); })
+              .catch(function (err) { toast(err.message); });
+          });
+        });
+      } else {
+        $('#cmList').innerHTML = '<span class="muted">还没有评论,来写第一条吧</span>';
+      }
+      document.querySelectorAll('#myStars .star-pick-item').forEach(function (s) {
+        s.addEventListener('click', function () {
+          var v = Number(s.dataset.star);
+          api('/api/reviews', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo: repo, rating: v, text: '', author: '' }),
+          }).then(function () { loadReviews(repo); toast('已评 ' + v + ' 星'); })
+            .catch(function (e) { toast(e.message); });
+        });
+      });
+      document.querySelectorAll('#cmStars .star-pick-item').forEach(function (s) {
+        s.addEventListener('click', function () {
+          cmRating = Number(s.dataset.star);
+          document.querySelectorAll('#cmStars .star-pick-item').forEach(function (x) {
+            x.classList.toggle('on', Number(x.dataset.star) <= cmRating);
+          });
+        });
+      });
+    }).catch(function () {});
   }
   $('#btnBackPlugin').addEventListener('click', function () {
     switchView('market');
