@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'monitor', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -245,6 +245,100 @@
     if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
     return b + ' B';
   }
+  // ---- 遥控台(DSH RPC) ----
+  var curSession = null;
+  function extractText(d) {
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map(extractText).filter(Boolean).join(' ');
+    if (d && typeof d === 'object') {
+      if (typeof d.text === 'string') return d.text;
+      var parts = [];
+      for (var k in d) {
+        if (k === 'type' || k === 'seq' || k === 'time' || k === 'id') continue;
+        var t = extractText(d[k]);
+        if (t) parts.push(t);
+      }
+      return parts.slice(0, 8).join(' ');
+    }
+    return '';
+  }
+  function loadDshSessions() {
+    return api('/api/dsh/sessions').then(function (r) {
+      var items = r.items || [];
+      var el = document.querySelector('#dshSessions');
+      if (!el) return;
+      el.innerHTML = items.length ? items.map(function (s) {
+        var pj = (s.projections && s.projections.values) || {};
+        var title = pj.title || (s.sessionId.slice(0, 12) + '…');
+        var stats = pj.sessionStats || {};
+        return '<div class="plugin-row" data-sess="' + s.sessionId + '" style="cursor:pointer">' +
+          '<div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:500">' + (s.running ? '● ' : '○ ') + escHtml(title) +
+          (s.agentPreset ? ' <span class="pill idle">' + escHtml(s.agentPreset) + '</span>' : '') + '</div>' +
+          '<div class="plugin-meta">' + escHtml(s.cwd || '') + ' · ' +
+          (stats.turns != null ? (stats.turns + ' 轮 · ' + stats.steps + ' 步 · ') : '') + fmtRelative(s.updatedAt) + '</div>' +
+          '</div></div>';
+      }).join('') : '<span class="muted">无会话</span>';
+      document.querySelectorAll('#dshSessions [data-sess]').forEach(function (row) {
+        row.addEventListener('click', function () {
+          curSession = row.dataset.sess;
+          document.querySelectorAll('#dshSessions [data-sess]').forEach(function (x) { x.style.background = ''; });
+          row.style.background = 'var(--bg-hover)';
+          var s = items.find(function (x) { return x.sessionId === curSession; });
+          var pj = (s && s.projections && s.projections.values) || {};
+          document.querySelector('#intSessionName').textContent = '· ' + (pj.title || curSession.slice(0, 12));
+          document.querySelector('#interveneCard').hidden = false;
+          loadDshHistory();
+        });
+      });
+    }).catch(function () {});
+  }
+  function loadDshHistory() {
+    if (!curSession) return;
+    return api('/api/dsh/history?sessionId=' + encodeURIComponent(curSession) + '&max=30').then(function (r) {
+      var el = document.querySelector('#dshHistory');
+      if (!el) return;
+      var events = (r.events || []).slice(-30);
+      el.innerHTML = events.length ? events.map(function (h) {
+        var ev = h.event || h;
+        var t = extractText(ev).slice(0, 120);
+        return '<div class="plugin-row" style="padding:6px 2px"><div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:400;font-size:12px">' + escHtml(ev.type || 'event') + '</div>' +
+          (t ? '<div class="plugin-desc">' + escHtml(t) + '</div>' : '') +
+          '</div></div>';
+      }).join('') : '<span class="muted">暂无消息</span>';
+    }).catch(function () {});
+  }
+  function loadDshWorkspace() {
+    return api('/api/dsh/workspace').then(function (r) {
+      var el = document.querySelector('#dshWorkspace');
+      if (!el) return;
+      el.innerHTML = (r.items || []).map(function (w) {
+        return '<div class="plugin-row"><div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:500">' + escHtml(w.title || w.workspaceId) + '</div>' +
+          '<div class="plugin-meta">' + escHtml(w.path || '') + ' · ' + (w.sessionIds ? w.sessionIds.length : 0) + ' 个会话</div>' +
+          '</div></div>';
+      }).join('') || '<span class="muted">无工作区</span>';
+    }).catch(function () {});
+  }
+  function loadDshModels() {
+    return api('/api/dsh/models').then(function (r) {
+      var sel = document.querySelector('#intModel');
+      if (!sel) return;
+      var html = '';
+      (r.groups || []).forEach(function (g) {
+        (g.models || []).forEach(function (md) {
+          html += '<option value="' + escHtml(g.id) + '/' + escHtml(md.id) + '">' + escHtml(g.name + ' · ' + (md.name || md.id)) + '</option>';
+        });
+      });
+      sel.innerHTML = html || '<option value="">(无模型)</option>';
+    }).catch(function () {});
+  }
+  function curModelParts() {
+    var v = (document.querySelector('#intModel') && document.querySelector('#intModel').value) || '';
+    var parts = v.split('/');
+    return { provider: parts[0] || '', model: parts.slice(1).join('/') || '' };
+  }
   function loadMonitor() {
     return api('/api/monitor').then(function (d) {
       var s = d.service;
@@ -484,6 +578,56 @@
   $('#btnBackPost').addEventListener('click', function () {
     switchView('community');
     loadFeed(feedTab);
+  });
+  // 遥控台按钮
+  $('#btnSend').addEventListener('click', function () {
+    if (!curSession) { toast('先选择一个会话'); return; }
+    var text = $('#intText').value.trim();
+    if (!text) { toast('输入内容'); return; }
+    api('/api/dsh/prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession, text: text, mode: 'queue' }),
+    }).then(function (r) {
+      toast(r.ok ? '已下发会话' : '下发失败');
+      $('#intText').value = '';
+      loadDshHistory();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnSteer').addEventListener('click', function () {
+    if (!curSession) { toast('先选择一个会话'); return; }
+    var text = $('#intText').value.trim();
+    if (!text) { toast('输入内容'); return; }
+    api('/api/dsh/prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession, text: text, mode: 'steer' }),
+    }).then(function (r) {
+      toast(r.ok ? '已插入转向' : '转向失败');
+      $('#intText').value = '';
+      loadDshHistory();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnCancel').addEventListener('click', function () {
+    if (!curSession) return;
+    if (!confirm('取消当前会话的进行中任务?')) return;
+    api('/api/dsh/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession }),
+    }).then(function (r) { toast(r.ok ? '已发送取消' : '取消失败'); })
+      .catch(function (e) { toast(e.message); });
+  });
+  $('#btnSwitchModel').addEventListener('click', function () {
+    if (!curSession) { toast('先选择一个会话'); return; }
+    var mp = curModelParts();
+    if (!mp.provider || !mp.model) { toast('选择模型'); return; }
+    api('/api/dsh/select-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession, provider: mp.provider, model: mp.model }),
+    }).then(function (r) { toast(r.ok ? '模型已切换' : '切换失败'); })
+      .catch(function (e) { toast(e.message); });
   });
   $('#btnJoinGroup').addEventListener('click', function () {
     $('#groupModal').hidden = false;
@@ -1009,7 +1153,12 @@
   loadFeed('all');
   renderPostAuth();
   loadMonitor();
+  loadDshSessions();
+  loadDshWorkspace();
+  loadDshModels();
   setInterval(loadMonitor, 5000);
+  setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
+  setInterval(loadDshSessions, 15000);
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);

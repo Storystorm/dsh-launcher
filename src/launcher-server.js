@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1323,6 +1323,34 @@ function deleteReview(repo, id) {
   return { ok: true, removed: before - entry.comments.length };
 }
 
+// ================================================================ DSH RPC 代理(会话/工作区/干预)
+function dshRpc(method, payload) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(checkUrl());
+    const body = JSON.stringify({
+      type: 'client-request',
+      rpcId: 'launcher-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      method: method,
+      payload: payload || {},
+    });
+    const req = http.request({
+      host: u.hostname, port: u.port, path: '/api/' + method, method: 'POST',
+      headers: { 'content-type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 15000,
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(b)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 // ================================================================ 监控看板
 function dirSize(dir) {
   let total = 0;
@@ -1730,7 +1758,6 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
       <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>监控</button>
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
-      <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
       <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
       <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
@@ -1793,9 +1820,8 @@ const PAGE_HTML = `<div class="app">
       </div>
     </section>
     <section class="view" id="view-monitor" hidden>
-      <h2 class="title">监控看板</h2>
+      <h2 class="title">监控 · 遥控台</h2>
       <div class="card">
-        <div class="card-title">Harness 服务</div>
         <div class="row spread">
           <div class="row">
             <span class="dot stopped" id="monDot"></span>
@@ -1808,22 +1834,38 @@ const PAGE_HTML = `<div class="app">
         </div>
       </div>
       <div class="card">
-        <div class="card-title">DSH 信息</div>
-        <div class="env-row"><div class="env-name">版本</div><div class="env-val" id="monVersion">—</div></div>
-        <div class="env-row"><div class="env-name">数据目录</div><div class="env-val" id="monHome">—</div></div>
-        <div class="env-row"><div class="env-name">Profiles</div><div class="env-val" id="monProfiles">—</div></div>
+        <div class="card-title">会话</div>
+        <div id="dshSessions" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+      <div class="card" id="interveneCard" hidden>
+        <div class="card-title">干预会话 <span id="intSessionName" class="muted" style="font-weight:400"></span></div>
+        <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <select id="intModel" style="max-width:340px;height:32px;border:1px solid var(--border-l2);border-radius:8px;padding:0 8px;font-size:13px;background:var(--bg-layer-1);color:var(--label-primary)"></select>
+          <button class="btn outline sm" id="btnSwitchModel">切换模型</button>
+          <button class="btn danger sm" id="btnCancel">取消当前任务</button>
+        </div>
+        <textarea id="intText" rows="2" placeholder="输入要下发给会话的需求…" style="width:100%;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="btn primary sm" id="btnSend">发送</button>
+          <button class="btn outline sm" id="btnSteer">插入转向(steer)</button>
+          <span class="muted" style="font-size:11px">发送 = 排队等待当前任务;转向 = 立即插话打断</span>
+        </div>
+        <div class="card-title" style="margin-top:14px">最近消息</div>
+        <div id="dshHistory" class="plugin-list" style="max-height:320px;overflow-y:auto"><span class="muted">选择会话后显示</span></div>
       </div>
       <div class="card">
-        <div class="card-title">当前配置(settings.yaml · 密钥已脱敏)</div>
-        <pre class="mon-pre" id="monSettings">加载中…</pre>
+        <div class="card-title">工作区</div>
+        <div id="dshWorkspace" class="plugin-list"><span class="muted">加载中…</span></div>
       </div>
       <div class="card">
-        <div class="card-title">最近会话</div>
-        <div id="monSessions" class="plugin-list"></div>
-      </div>
-      <div class="card">
-        <div class="card-title">存储</div>
-        <div id="monStorage" class="muted" style="font-size:12px"></div>
+        <div class="card-title">运行日志</div>
+        <div class="log-toolbar">
+          <button class="btn outline sm" id="btnRefreshLog">刷新</button>
+          <button class="btn outline sm" id="btnClearLog">清空</button>
+          <label class="checkbox-row" style="font-size:12px"><input id="autoScroll" type="checkbox" checked>自动滚动</label>
+          <span class="muted" id="logPath" style="font-size:12px"></span>
+        </div>
+        <div class="log-box" id="logBox" style="height:260px">加载中…</div>
       </div>
     </section>
     <section class="view" id="view-settings" hidden>
@@ -1865,16 +1907,6 @@ const PAGE_HTML = `<div class="app">
           <div class="hint">用于检查新版本的仓库地址,留空使用默认值</div>
         </div>
       </div>
-    </section>
-    <section class="view" id="view-log" hidden>
-      <h2 class="title">运行日志</h2>
-      <div class="log-toolbar">
-        <button class="btn outline sm" id="btnRefreshLog">刷新</button>
-        <button class="btn outline sm" id="btnClearLog">清空</button>
-        <label class="checkbox-row" style="font-size:12px"><input id="autoScroll" type="checkbox" checked>自动滚动</label>
-        <span class="muted" id="logPath" style="font-size:12px"></span>
-      </div>
-      <div class="log-box" id="logBox">加载中…</div>
     </section>
     <section class="view" id="view-community" hidden>
       <h2 class="title">社区</h2>
@@ -2044,7 +2076,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'monitor', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2289,6 +2321,100 @@ const PAGE_JS = `(function () {
     if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
     return b + ' B';
   }
+  // ---- 遥控台(DSH RPC) ----
+  var curSession = null;
+  function extractText(d) {
+    if (typeof d === 'string') return d;
+    if (Array.isArray(d)) return d.map(extractText).filter(Boolean).join(' ');
+    if (d && typeof d === 'object') {
+      if (typeof d.text === 'string') return d.text;
+      var parts = [];
+      for (var k in d) {
+        if (k === 'type' || k === 'seq' || k === 'time' || k === 'id') continue;
+        var t = extractText(d[k]);
+        if (t) parts.push(t);
+      }
+      return parts.slice(0, 8).join(' ');
+    }
+    return '';
+  }
+  function loadDshSessions() {
+    return api('/api/dsh/sessions').then(function (r) {
+      var items = r.items || [];
+      var el = document.querySelector('#dshSessions');
+      if (!el) return;
+      el.innerHTML = items.length ? items.map(function (s) {
+        var pj = (s.projections && s.projections.values) || {};
+        var title = pj.title || (s.sessionId.slice(0, 12) + '…');
+        var stats = pj.sessionStats || {};
+        return '<div class="plugin-row" data-sess="' + s.sessionId + '" style="cursor:pointer">' +
+          '<div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:500">' + (s.running ? '● ' : '○ ') + escHtml(title) +
+          (s.agentPreset ? ' <span class="pill idle">' + escHtml(s.agentPreset) + '</span>' : '') + '</div>' +
+          '<div class="plugin-meta">' + escHtml(s.cwd || '') + ' · ' +
+          (stats.turns != null ? (stats.turns + ' 轮 · ' + stats.steps + ' 步 · ') : '') + fmtRelative(s.updatedAt) + '</div>' +
+          '</div></div>';
+      }).join('') : '<span class="muted">无会话</span>';
+      document.querySelectorAll('#dshSessions [data-sess]').forEach(function (row) {
+        row.addEventListener('click', function () {
+          curSession = row.dataset.sess;
+          document.querySelectorAll('#dshSessions [data-sess]').forEach(function (x) { x.style.background = ''; });
+          row.style.background = 'var(--bg-hover)';
+          var s = items.find(function (x) { return x.sessionId === curSession; });
+          var pj = (s && s.projections && s.projections.values) || {};
+          document.querySelector('#intSessionName').textContent = '· ' + (pj.title || curSession.slice(0, 12));
+          document.querySelector('#interveneCard').hidden = false;
+          loadDshHistory();
+        });
+      });
+    }).catch(function () {});
+  }
+  function loadDshHistory() {
+    if (!curSession) return;
+    return api('/api/dsh/history?sessionId=' + encodeURIComponent(curSession) + '&max=30').then(function (r) {
+      var el = document.querySelector('#dshHistory');
+      if (!el) return;
+      var events = (r.events || []).slice(-30);
+      el.innerHTML = events.length ? events.map(function (h) {
+        var ev = h.event || h;
+        var t = extractText(ev).slice(0, 120);
+        return '<div class="plugin-row" style="padding:6px 2px"><div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:400;font-size:12px">' + escHtml(ev.type || 'event') + '</div>' +
+          (t ? '<div class="plugin-desc">' + escHtml(t) + '</div>' : '') +
+          '</div></div>';
+      }).join('') : '<span class="muted">暂无消息</span>';
+    }).catch(function () {});
+  }
+  function loadDshWorkspace() {
+    return api('/api/dsh/workspace').then(function (r) {
+      var el = document.querySelector('#dshWorkspace');
+      if (!el) return;
+      el.innerHTML = (r.items || []).map(function (w) {
+        return '<div class="plugin-row"><div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:500">' + escHtml(w.title || w.workspaceId) + '</div>' +
+          '<div class="plugin-meta">' + escHtml(w.path || '') + ' · ' + (w.sessionIds ? w.sessionIds.length : 0) + ' 个会话</div>' +
+          '</div></div>';
+      }).join('') || '<span class="muted">无工作区</span>';
+    }).catch(function () {});
+  }
+  function loadDshModels() {
+    return api('/api/dsh/models').then(function (r) {
+      var sel = document.querySelector('#intModel');
+      if (!sel) return;
+      var html = '';
+      (r.groups || []).forEach(function (g) {
+        (g.models || []).forEach(function (md) {
+          html += '<option value="' + escHtml(g.id) + '/' + escHtml(md.id) + '">' + escHtml(g.name + ' · ' + (md.name || md.id)) + '</option>';
+        });
+      });
+      sel.innerHTML = html || '<option value="">(无模型)</option>';
+    }).catch(function () {});
+  }
+  function curModelParts() {
+    var v = (document.querySelector('#intModel') && document.querySelector('#intModel').value) || '';
+    var parts = v.split('/');
+    return { provider: parts[0] || '', model: parts.slice(1).join('/') || '' };
+  }
   function loadMonitor() {
     return api('/api/monitor').then(function (d) {
       var s = d.service;
@@ -2528,6 +2654,56 @@ const PAGE_JS = `(function () {
   $('#btnBackPost').addEventListener('click', function () {
     switchView('community');
     loadFeed(feedTab);
+  });
+  // 遥控台按钮
+  $('#btnSend').addEventListener('click', function () {
+    if (!curSession) { toast('先选择一个会话'); return; }
+    var text = $('#intText').value.trim();
+    if (!text) { toast('输入内容'); return; }
+    api('/api/dsh/prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession, text: text, mode: 'queue' }),
+    }).then(function (r) {
+      toast(r.ok ? '已下发会话' : '下发失败');
+      $('#intText').value = '';
+      loadDshHistory();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnSteer').addEventListener('click', function () {
+    if (!curSession) { toast('先选择一个会话'); return; }
+    var text = $('#intText').value.trim();
+    if (!text) { toast('输入内容'); return; }
+    api('/api/dsh/prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession, text: text, mode: 'steer' }),
+    }).then(function (r) {
+      toast(r.ok ? '已插入转向' : '转向失败');
+      $('#intText').value = '';
+      loadDshHistory();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnCancel').addEventListener('click', function () {
+    if (!curSession) return;
+    if (!confirm('取消当前会话的进行中任务?')) return;
+    api('/api/dsh/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession }),
+    }).then(function (r) { toast(r.ok ? '已发送取消' : '取消失败'); })
+      .catch(function (e) { toast(e.message); });
+  });
+  $('#btnSwitchModel').addEventListener('click', function () {
+    if (!curSession) { toast('先选择一个会话'); return; }
+    var mp = curModelParts();
+    if (!mp.provider || !mp.model) { toast('选择模型'); return; }
+    api('/api/dsh/select-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: curSession, provider: mp.provider, model: mp.model }),
+    }).then(function (r) { toast(r.ok ? '模型已切换' : '切换失败'); })
+      .catch(function (e) { toast(e.message); });
   });
   $('#btnJoinGroup').addEventListener('click', function () {
     $('#groupModal').hidden = false;
@@ -3053,7 +3229,12 @@ const PAGE_JS = `(function () {
   loadFeed('all');
   renderPostAuth();
   loadMonitor();
+  loadDshSessions();
+  loadDshWorkspace();
+  loadDshModels();
   setInterval(loadMonitor, 5000);
+  setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
+  setInterval(loadDshSessions, 15000);
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
@@ -3126,6 +3307,64 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/status' && m === 'GET') return sendJSON(res, 200, await getStatus());
     if (p === '/api/monitor' && m === 'GET') return sendJSON(res, 200, await getMonitor());
+    if (p === '/api/dsh/sessions' && m === 'GET') {
+      try {
+        const r = await dshRpc('session.list', {});
+        return sendJSON(res, 200, { items: (r.result && r.result.value && r.result.value.items) || [] });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/dsh/history' && m === 'GET') {
+      const sessionId = String(u.searchParams.get('sessionId') || '');
+      const max = Math.min(Number(u.searchParams.get('max')) || 30, 100);
+      if (!sessionId) return sendJSON(res, 400, { error: '缺少 sessionId' });
+      try {
+        const r = await dshRpc('session.history', { sessionId: sessionId, maxMessages: max });
+        return sendJSON(res, 200, { events: (r.result && r.result.value && r.result.value.events) || [], hasMore: r.result && r.result.value && r.result.value.hasMore });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/dsh/workspace' && m === 'GET') {
+      try {
+        const r = await dshRpc('workspace.list', {});
+        return sendJSON(res, 200, { items: (r.result && r.result.value && r.result.value.items) || [] });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/dsh/models' && m === 'GET') {
+      try {
+        const r = await dshRpc('llm.models', {});
+        return sendJSON(res, 200, { groups: (r.result && r.result.value && r.result.value.groups) || [] });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/dsh/prompt' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const sessionId = String(body.sessionId || '');
+      const text = String(body.text || '').trim().slice(0, 8000);
+      const mode = body.mode === 'steer' ? 'steer' : 'queue';
+      if (!sessionId || !text) return sendJSON(res, 400, { error: '缺少 sessionId 或内容' });
+      try {
+        const r = await dshRpc('session.prompt', { sessionId: sessionId, mode: mode, content: [{ type: 'text', text: text }] });
+        return sendJSON(res, 200, { ok: !!(r.result && r.result.ok), value: r.result && r.result.value });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/dsh/cancel' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const sessionId = String(body.sessionId || '');
+      if (!sessionId) return sendJSON(res, 400, { error: '缺少 sessionId' });
+      try {
+        const r = await dshRpc('session.cancel', { sessionId: sessionId });
+        return sendJSON(res, 200, { ok: !!(r.result && r.result.ok), value: r.result && r.result.value });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/dsh/select-model' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const sessionId = String(body.sessionId || '');
+      const provider = String(body.provider || '');
+      const model = String(body.model || '');
+      if (!sessionId || !provider || !model) return sendJSON(res, 400, { error: '缺少参数' });
+      try {
+        const r = await dshRpc('session.selectModel', { sessionId: sessionId, provider: provider, model: model });
+        return sendJSON(res, 200, { ok: !!(r.result && r.result.ok), value: r.result && r.result.value });
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
     if (p === '/api/env' && m === 'GET') return sendJSON(res, 200, await getEnv());
     if (p === '/api/config' && m === 'GET') {
       return sendJSON(res, 200, {
