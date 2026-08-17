@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui', 'plugin'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -259,6 +259,11 @@
     $('#uiList').innerHTML = d.uiThemes.length
       ? d.uiThemes.map(function (i) { return pluginRowHtml(i, true); }).join('')
       : '<span class="muted">暂无主题类插件</span>';
+    if (d.hubs && d.hubs.length) {
+      $('#skillsHubs').innerHTML = d.hubs.map(function (h) {
+        return '<a class="hub-chip" href="' + h.url + '" target="_blank">' + h.name + '<span class="muted">' + h.desc + '</span></a>';
+      }).join('');
+    }
     $('#dshLatest').textContent = d.dsh.latest ? ('最新 ' + d.dsh.latest) : '';
     $('#dshLatestMeta').textContent = d.dsh.at ? ('最近更新 ' + d.dsh.at) : (d.dsh.name || '官方仓库动态');
     if (d.catalogError) {
@@ -274,11 +279,6 @@
           m.querySelector('img').src = img.src;
           m.hidden = false;
         }
-      });
-    });
-    document.querySelectorAll('.plugin-row [data-review]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        openPluginDetail(b.dataset.review);
       });
     });
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
@@ -331,9 +331,47 @@
     toast('刷新目录…');
     loadDiscover(true).then(function () { toast('目录已刷新'); });
   });
+  // ---- 技能库 ----
+  function skillRowHtml(item) {
+    return '<div class="plugin-row">' +
+      '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(item.name) + '" alt="">' +
+      '<div class="plugin-info">' +
+      '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
+      '<div class="plugin-desc">' + (item.description || '') + '</div>' +
+      '<div class="plugin-meta">★ ' + item.stars + ' · 更新于 ' + item.updated + '</div>' +
+      '</div>' +
+      '<button class="btn outline sm" data-review="' + item.name + '">评测</button>' +
+      '<a class="btn outline sm" href="' + item.html_url + '" target="_blank" style="text-decoration:none">GitHub</a>' +
+      '</div>';
+  }
+  function loadSkills(force) {
+    return api('/api/skills' + (force ? '?force=1' : '')).then(function (cat) {
+      var all = (cat.trending || []).concat(cat.newest || []);
+      var seen = {};
+      var uniq = all.filter(function (i) {
+        if (seen[i.name]) return false;
+        seen[i.name] = 1;
+        return true;
+      });
+      $('#skillsList').innerHTML = uniq.length
+        ? uniq.map(skillRowHtml).join('')
+        : '<span class="muted">技能库获取失败: ' + (cat.error || '未知错误') + '</span>';
+    }).catch(function (e) {
+      $('#skillsList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  // 评测按钮:事件委托,按所在容器判断插件 / 技能
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t !== document && !(t.getAttribute && t.getAttribute('data-review'))) t = t.parentNode;
+    if (!t || t === document) return;
+    window.__currentIsSkill = !!(t.closest && t.closest('#skillsList'));
+    openPluginDetail(t.getAttribute('data-review'));
+  });
   // ---- 插件评测详情页 ----
   function openPluginDetail(repo) {
     switchView('plugin');
+    window.__currentIsSkill = window.__currentIsSkill || false;
     $('#pluginDetailCard').innerHTML = '<span class="muted">加载评测中…</span>';
     api('/api/plugin-detail?repo=' + encodeURIComponent(repo)).then(renderPluginDetail).catch(function (e) {
       $('#pluginDetailCard').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
@@ -364,8 +402,11 @@
       '<div class="row spread">' +
       '<div class="plugin-name" style="font-size:16px">' + d.repo + '</div>' +
       '<div class="row">' +
-      '<button class="btn outline sm" id="pdInstall" data-pkg="' + d.repo + '">安装</button>' +
-      '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>' +
+      (window.__currentIsSkill
+        ? '<a class="btn primary sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">前往安装</a>' +
+          '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>'
+        : '<button class="btn outline sm" id="pdInstall" data-pkg="' + d.repo + '">安装</button>' +
+          '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>') +
       '</div>' +
       '</div>' +
       '<div class="plugin-meta">★ ' + (info.stars || 0) + ' · 更新于 ' + (info.updated || '—') + (rv.auto ? ' · 自动评测' : ' · 编辑评测') + '</div>' +
@@ -434,6 +475,16 @@
       '</div>';
     loadReviews(d.repo);
     renderCommentAuth();
+    if (window.__currentIsSkill) {
+      var hintEl = document.querySelector('#pluginDetailCard');
+      if (hintEl) {
+        var note = document.createElement('div');
+        note.className = 'hint';
+        note.style.cssText = 'margin-top:10px';
+        note.innerHTML = '技能安装:请到 GitHub 仓库按 README 指引安装(或从上方「前往安装」跳转);安装后回来品评打分。';
+        hintEl.appendChild(note);
+      }
+    }
     var cmBtn = document.querySelector('#cmSubmit');
     if (cmBtn) {
       cmBtn.addEventListener('click', function () {
@@ -692,6 +743,7 @@
   loadEnv();
   loadUpdate();
   loadDiscover();
+  loadSkills();
   loadAuth();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {

@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -756,6 +756,14 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
+// 社区目录(跳转已有集散社区,安装走现有渠道)
+const COMMUNITY_HUBS = [
+  { name: 'dsh-suite 精选目录', desc: 'DSH 插件/Skill 精选目录(2.3k+ 条目)', url: 'https://whyihaveyou.github.io/dsh-suite/' },
+  { name: 'dsh-market 中文市场', desc: '1500+ DSH 插件,中文搜索', url: 'https://github.com/2BingLing/dsh-market' },
+  { name: 'awesome-dsh-plugins', desc: '插件商店 / 市场 / 枢纽 Awesome 列表', url: 'https://github.com/imsai-sh/awesome-deepseek-harness-plugins' },
+  { name: 'SkillHub', desc: 'Agent Skills 市场', url: 'https://www.skillhub.club/' },
+];
+
 // ================================================================ 插件目录与发现
 let pluginCatalog = { trending: [], newest: [], uiThemes: [], checkedAt: 0, error: null };
 let pluginJob = null;
@@ -811,6 +819,25 @@ async function refreshPluginCatalog(force) {
   }
   pluginCatalog = fresh;
   return pluginCatalog;
+}
+
+let skillCatalog = { trending: [], newest: [], checkedAt: 0, error: null };
+async function refreshSkillCatalog(force) {
+  const now = Date.now();
+  if (!force && skillCatalog.checkedAt && now - skillCatalog.checkedAt < 10 * 60 * 1000) return skillCatalog;
+  const fresh = { trending: [], newest: [], checkedAt: now, error: null };
+  try {
+    const pair = await Promise.all([
+      ghSearch('topic:dsh-skill', 'stars', 15),
+      ghSearch('topic:dsh-skill', 'updated', 15),
+    ]);
+    fresh.trending = pair[0];
+    fresh.newest = pair[1];
+  } catch (e) {
+    fresh.error = String(e && e.message || e);
+  }
+  skillCatalog = fresh;
+  return skillCatalog;
 }
 
 async function getDiscover() {
@@ -881,6 +908,7 @@ async function getDiscover() {
     uiThemes: cat.uiThemes,
     catalogError: cat.error,
     checkedAt: cat.checkedAt,
+    hubs: COMMUNITY_HUBS,
   };
 }
 
@@ -1535,7 +1563,9 @@ a:hover{text-decoration:underline}
 .avatar{width:22px;height:22px;border-radius:50%;background:var(--bg-layer-2);border:1px solid var(--border-l2);object-fit:cover;flex:none}
 .qr-img{width:200px;height:200px;border:1px solid var(--border-l2);border-radius:10px;background:#fff}
 .auth-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border-l2);border-radius:8px;margin-bottom:10px;text-align:left;width:100%;background:var(--bg-layer-1);cursor:pointer;font:inherit;color:inherit}
-.auth-row:hover{background:var(--bg-hover)}`;
+.auth-row:hover{background:var(--bg-hover)}
+.hub-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border-l2);border-radius:16px;font-size:12px;color:var(--label-primary);text-decoration:none;background:var(--bg-layer-1)}
+.hub-chip:hover{background:var(--bg-hover)}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -1553,6 +1583,7 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
       <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
       <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
+      <button class="nav-item" data-view="skills"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.5 3.6 3.9.3-3 2.6 1 3.9-3.4-2-3.4 2 1-3.9-3-2.6 3.9-.3z"/></svg></span>技能</button>
       <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
     <div class="login-chip" id="loginChip"><button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button></div>
@@ -1756,6 +1787,18 @@ const PAGE_HTML = `<div class="app">
         <ul class="review-list" id="pdComments"></ul>
       </div>
     </section>
+    <section class="view" id="view-skills" hidden>
+      <h2 class="title">技能</h2>
+      <div class="card">
+        <div class="card-title">社区集散目录 <span class="muted" style="font-weight:400">· 跳转到已有社区</span></div>
+        <div id="skillsHubs" class="row" style="flex-wrap:wrap;gap:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">技能库 <span class="muted" style="font-weight:400">· GitHub topic:dsh-skill</span></div>
+        <div class="hint" style="margin-bottom:10px">针对每个技能可品评、打分、写评论;安装走 GitHub / SkillHub 等现有渠道</div>
+        <div id="skillsList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+    </section>
     <section class="view" id="view-ui" hidden>
       <h2 class="title">界面</h2>
       <div class="card">
@@ -1789,7 +1832,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui', 'plugin'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2048,6 +2091,11 @@ const PAGE_JS = `(function () {
     $('#uiList').innerHTML = d.uiThemes.length
       ? d.uiThemes.map(function (i) { return pluginRowHtml(i, true); }).join('')
       : '<span class="muted">暂无主题类插件</span>';
+    if (d.hubs && d.hubs.length) {
+      $('#skillsHubs').innerHTML = d.hubs.map(function (h) {
+        return '<a class="hub-chip" href="' + h.url + '" target="_blank">' + h.name + '<span class="muted">' + h.desc + '</span></a>';
+      }).join('');
+    }
     $('#dshLatest').textContent = d.dsh.latest ? ('最新 ' + d.dsh.latest) : '';
     $('#dshLatestMeta').textContent = d.dsh.at ? ('最近更新 ' + d.dsh.at) : (d.dsh.name || '官方仓库动态');
     if (d.catalogError) {
@@ -2063,11 +2111,6 @@ const PAGE_JS = `(function () {
           m.querySelector('img').src = img.src;
           m.hidden = false;
         }
-      });
-    });
-    document.querySelectorAll('.plugin-row [data-review]').forEach(function (b) {
-      b.addEventListener('click', function () {
-        openPluginDetail(b.dataset.review);
       });
     });
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
@@ -2120,9 +2163,47 @@ const PAGE_JS = `(function () {
     toast('刷新目录…');
     loadDiscover(true).then(function () { toast('目录已刷新'); });
   });
+  // ---- 技能库 ----
+  function skillRowHtml(item) {
+    return '<div class="plugin-row">' +
+      '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(item.name) + '" alt="">' +
+      '<div class="plugin-info">' +
+      '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
+      '<div class="plugin-desc">' + (item.description || '') + '</div>' +
+      '<div class="plugin-meta">★ ' + item.stars + ' · 更新于 ' + item.updated + '</div>' +
+      '</div>' +
+      '<button class="btn outline sm" data-review="' + item.name + '">评测</button>' +
+      '<a class="btn outline sm" href="' + item.html_url + '" target="_blank" style="text-decoration:none">GitHub</a>' +
+      '</div>';
+  }
+  function loadSkills(force) {
+    return api('/api/skills' + (force ? '?force=1' : '')).then(function (cat) {
+      var all = (cat.trending || []).concat(cat.newest || []);
+      var seen = {};
+      var uniq = all.filter(function (i) {
+        if (seen[i.name]) return false;
+        seen[i.name] = 1;
+        return true;
+      });
+      $('#skillsList').innerHTML = uniq.length
+        ? uniq.map(skillRowHtml).join('')
+        : '<span class="muted">技能库获取失败: ' + (cat.error || '未知错误') + '</span>';
+    }).catch(function (e) {
+      $('#skillsList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  // 评测按钮:事件委托,按所在容器判断插件 / 技能
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t !== document && !(t.getAttribute && t.getAttribute('data-review'))) t = t.parentNode;
+    if (!t || t === document) return;
+    window.__currentIsSkill = !!(t.closest && t.closest('#skillsList'));
+    openPluginDetail(t.getAttribute('data-review'));
+  });
   // ---- 插件评测详情页 ----
   function openPluginDetail(repo) {
     switchView('plugin');
+    window.__currentIsSkill = window.__currentIsSkill || false;
     $('#pluginDetailCard').innerHTML = '<span class="muted">加载评测中…</span>';
     api('/api/plugin-detail?repo=' + encodeURIComponent(repo)).then(renderPluginDetail).catch(function (e) {
       $('#pluginDetailCard').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
@@ -2153,8 +2234,11 @@ const PAGE_JS = `(function () {
       '<div class="row spread">' +
       '<div class="plugin-name" style="font-size:16px">' + d.repo + '</div>' +
       '<div class="row">' +
-      '<button class="btn outline sm" id="pdInstall" data-pkg="' + d.repo + '">安装</button>' +
-      '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>' +
+      (window.__currentIsSkill
+        ? '<a class="btn primary sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">前往安装</a>' +
+          '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>'
+        : '<button class="btn outline sm" id="pdInstall" data-pkg="' + d.repo + '">安装</button>' +
+          '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>') +
       '</div>' +
       '</div>' +
       '<div class="plugin-meta">★ ' + (info.stars || 0) + ' · 更新于 ' + (info.updated || '—') + (rv.auto ? ' · 自动评测' : ' · 编辑评测') + '</div>' +
@@ -2223,6 +2307,16 @@ const PAGE_JS = `(function () {
       '</div>';
     loadReviews(d.repo);
     renderCommentAuth();
+    if (window.__currentIsSkill) {
+      var hintEl = document.querySelector('#pluginDetailCard');
+      if (hintEl) {
+        var note = document.createElement('div');
+        note.className = 'hint';
+        note.style.cssText = 'margin-top:10px';
+        note.innerHTML = '技能安装:请到 GitHub 仓库按 README 指引安装(或从上方「前往安装」跳转);安装后回来品评打分。';
+        hintEl.appendChild(note);
+      }
+    }
     var cmBtn = document.querySelector('#cmSubmit');
     if (cmBtn) {
       cmBtn.addEventListener('click', function () {
@@ -2481,6 +2575,7 @@ const PAGE_JS = `(function () {
   loadEnv();
   loadUpdate();
   loadDiscover();
+  loadSkills();
   loadAuth();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
@@ -2572,6 +2667,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/update/check' && m === 'POST') {
       const fresh = await checkUpdate(true);
       return sendJSON(res, 200, Object.assign({ current: VERSION, source: updateSource() }, fresh));
+    }
+    if (p === '/api/skills' && m === 'GET') {
+      if (u.searchParams.get('force') === '1') await refreshSkillCatalog(true);
+      const cat = await refreshSkillCatalog(false);
+      return sendJSON(res, 200, cat);
     }
     if (p === '/api/discover' && m === 'GET') {
       if (u.searchParams.get('force') === '1') await refreshPluginCatalog(true);

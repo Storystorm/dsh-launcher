@@ -15,6 +15,7 @@
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
       <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
       <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
+      <button class="nav-item" data-view="skills"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.5 3.6 3.9.3-3 2.6 1 3.9-3.4-2-3.4 2 1-3.9-3-2.6 3.9-.3z"/></svg></span>技能</button>
       <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
     <div class="login-chip" id="loginChip"><button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button></div>
@@ -216,6 +217,18 @@
       <div class="card">
         <div class="card-title">简评</div>
         <ul class="review-list" id="pdComments"></ul>
+      </div>
+    </section>
+    <section class="view" id="view-skills" hidden>
+      <h2 class="title">技能</h2>
+      <div class="card">
+        <div class="card-title">社区集散目录 <span class="muted" style="font-weight:400">· 跳转到已有社区</span></div>
+        <div id="skillsHubs" class="row" style="flex-wrap:wrap;gap:8px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">技能库 <span class="muted" style="font-weight:400">· GitHub topic:dsh-skill</span></div>
+        <div class="hint" style="margin-bottom:10px">针对每个技能可品评、打分、写评论;安装走 GitHub / SkillHub 等现有渠道</div>
+        <div id="skillsList" class="plugin-list"><span class="muted">加载中…</span></div>
       </div>
     </section>
     <section class="view" id="view-ui" hidden>
