@@ -176,6 +176,12 @@
     </section>
   </main>
 </div>
+<div class="modal-overlay" id="previewModal" hidden>
+  <div class="modal-dialog" style="padding:16px">
+    <img class="preview-img" src="" alt="插件预览">
+    <button class="btn outline sm" id="btnClosePreview">关闭</button>
+  </div>
+</div>
 <div class="modal-overlay" id="groupModal" hidden>
   <div class="modal-dialog">
     <div class="modal-title">加入微信群</div>

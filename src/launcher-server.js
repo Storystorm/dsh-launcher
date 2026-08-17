@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -928,6 +928,115 @@ function runPluginInstall(pkg) {
   })();
 }
 
+// ================================================================ 插件预览图
+const pluginPreviewCache = {};
+const ogFallback = (repo) => 'https://opengraph.githubassets.com/1/' + repo;
+
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION } }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return fetchText(new URL(res.headers.location, url).toString()).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      let body = '';
+      res.on('data', c => { body += c; });
+      res.on('end', () => resolve(body));
+    }).on('error', reject);
+  });
+}
+
+function extractFirstImage(md, repo, branch) {
+  const re = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)|<img[^>]+src=["']([^"']+)["']/g;
+  let m;
+  while ((m = re.exec(md))) {
+    const raw = (m[1] || m[2] || '').trim();
+    if (!raw) continue;
+    if (/badge|shields\.io|simpleicons|badgen/i.test(raw)) continue;
+    let url = raw;
+    if (!/^https?:/.test(url)) {
+      url = 'https://raw.githubusercontent.com/' + repo + '/' + branch + '/' + url.replace(/^\.?\//, '');
+    }
+    return url;
+  }
+  return null;
+}
+
+const previewImageCache = {};
+
+function fetchBinary(url) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION } }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return fetchBinary(new URL(res.headers.location, u).toString()).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error('HTTP ' + res.statusCode));
+      }
+      const chunks = [];
+      let size = 0;
+      res.on('data', c => {
+        size += c.length;
+        if (size > 6 * 1024 * 1024) { req.destroy(); return reject(new Error('image too large')); }
+        chunks.push(c);
+      });
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    req.on('error', reject);
+    req.setTimeout(20000, () => req.destroy(new Error('image timeout')));
+  });
+}
+
+function guessContentType(url, buf) {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50) return 'image/png';
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf.length >= 3 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+  if (buf.length >= 4 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) return 'image/webp';
+  const ext = String(url.split('?')[0].split('.').pop() || '').toLowerCase();
+  if (ext === 'svg') return 'image/svg+xml';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return 'application/octet-stream';
+}
+
+async function getPluginPreviewImage(repo) {
+  const now = Date.now();
+  const imageUrl = await getPluginPreview(repo);
+  const hit = previewImageCache[imageUrl];
+  if (hit && now - hit.at < 60 * 60 * 1000) return { buf: hit.buf, ct: hit.ct };
+  const buf = await fetchBinary(imageUrl);
+  const ct = guessContentType(imageUrl, buf);
+  previewImageCache[imageUrl] = { buf: buf, ct: ct, at: now };
+  return { buf: buf, ct: ct };
+}
+
+async function getPluginPreview(repo) {
+  const now = Date.now();
+  const hit = pluginPreviewCache[repo];
+  if (hit && now - hit.at < 60 * 60 * 1000) return hit.image;
+  let image = null;
+  for (const branch of ['main', 'master']) {
+    try {
+      const md = await fetchText('https://raw.githubusercontent.com/' + repo + '/' + branch + '/README.md');
+      image = extractFirstImage(md, repo, branch);
+      if (image) break;
+    } catch (e) {}
+  }
+  const final = image || ogFallback(repo);
+  pluginPreviewCache[repo] = { image: final, at: now };
+  return final;
+}
+
 // ================================================================ UI
 const FAVICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 50"><path d="' + WHALE_PATH + '" fill="#0f1115"/></svg>';
 
@@ -1031,7 +1140,10 @@ a:hover{text-decoration:underline}
 .plugin-info{flex:1;min-width:0}
 .plugin-name{font-size:13px;font-weight:600;word-break:break-all}
 .plugin-desc{font-size:12px;color:var(--label-secondary);margin-top:2px}
-.plugin-meta{font-size:12px;color:var(--label-tertiary);margin-top:2px}`;
+.plugin-meta{font-size:12px;color:var(--label-tertiary);margin-top:2px}
+.plugin-thumb{width:64px;height:64px;border-radius:8px;object-fit:cover;border:1px solid var(--border-l2);background:var(--bg-layer-2);flex:none;cursor:zoom-in}
+.plugin-thumb.ph{opacity:.35;cursor:default}
+.preview-img{max-width:760px;max-height:72vh;width:auto;border-radius:8px;border:1px solid var(--border-l2);background:#fff}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -1209,6 +1321,12 @@ const PAGE_HTML = `<div class="app">
       </div>
     </section>
   </main>
+</div>
+<div class="modal-overlay" id="previewModal" hidden>
+  <div class="modal-dialog" style="padding:16px">
+    <img class="preview-img" src="" alt="插件预览">
+    <button class="btn outline sm" id="btnClosePreview">关闭</button>
+  </div>
 </div>
 <div class="modal-overlay" id="groupModal" hidden>
   <div class="modal-dialog">
@@ -1451,6 +1569,12 @@ const PAGE_JS = `(function () {
   $('#btnCloseGroup').addEventListener('click', function () {
     $('#groupModal').hidden = true;
   });
+  $('#btnClosePreview').addEventListener('click', function () {
+    $('#previewModal').hidden = true;
+  });
+  $('#previewModal').addEventListener('click', function (e) {
+    if (e.target === this) this.hidden = true;
+  });
   $('#groupModal').addEventListener('click', function (e) {
     if (e.target === this) this.hidden = true;
   });
@@ -1460,6 +1584,7 @@ const PAGE_JS = `(function () {
       ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>'
       : '';
     return '<div class="plugin-row">' +
+      '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(item.name) + '" alt="">' +
       '<div class="plugin-info">' +
       '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
       '<div class="plugin-desc">' + (item.description || '') + '</div>' +
@@ -1478,6 +1603,18 @@ const PAGE_JS = `(function () {
     if (d.catalogError) {
       $('#marketList').innerHTML = '<span class="muted">目录获取失败: ' + d.catalogError + '</span>';
     }
+    document.querySelectorAll('.plugin-thumb').forEach(function (img) {
+      img.onerror = function () { this.classList.add('ph'); };
+    });
+    document.querySelectorAll('.plugin-thumb').forEach(function (img) {
+      img.addEventListener('click', function () {
+        if (img.src && img.src.indexOf('http') === 0 && !img.classList.contains('ph')) {
+          var m = document.querySelector('#previewModal');
+          m.querySelector('img').src = img.src;
+          m.hidden = false;
+        }
+      });
+    });
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
       b.addEventListener('click', function () {
         var pkg = b.dataset.pkg;
@@ -1665,6 +1802,21 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true });
     }
     if (p === '/api/market/install/status' && m === 'GET') return sendJSON(res, 200, pluginSnapshot());
+    if (p === '/api/plugin-preview' && m === 'GET') {
+      const repo = String(u.searchParams.get('repo') || '');
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });
+      return sendJSON(res, 200, { image: await getPluginPreview(repo) });
+    }
+    if (p === '/api/plugin-preview-img' && m === 'GET') {
+      const repo = String(u.searchParams.get('repo') || '');
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });
+      try {
+        const img = await getPluginPreviewImage(repo);
+        return send(res, 200, img.buf, img.ct);
+      } catch (e) {
+        return sendJSON(res, 502, { error: 'preview unavailable' });
+      }
+    }
     if (p === '/api/start' && m === 'POST') return sendJSON(res, 200, await startDsh());
     if (p === '/api/stop' && m === 'POST') return sendJSON(res, 200, await stopDsh());
     if (p === '/api/log' && m === 'GET') {

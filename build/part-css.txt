@@ -99,3 +99,6 @@ a:hover{text-decoration:underline}
 .plugin-name{font-size:13px;font-weight:600;word-break:break-all}
 .plugin-desc{font-size:12px;color:var(--label-secondary);margin-top:2px}
 .plugin-meta{font-size:12px;color:var(--label-tertiary);margin-top:2px}
+.plugin-thumb{width:64px;height:64px;border-radius:8px;object-fit:cover;border:1px solid var(--border-l2);background:var(--bg-layer-2);flex:none;cursor:zoom-in}
+.plugin-thumb.ph{opacity:.35;cursor:default}
+.preview-img{max-width:760px;max-height:72vh;width:auto;border-radius:8px;border:1px solid var(--border-l2);background:#fff}

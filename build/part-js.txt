@@ -231,6 +231,12 @@
   $('#btnCloseGroup').addEventListener('click', function () {
     $('#groupModal').hidden = true;
   });
+  $('#btnClosePreview').addEventListener('click', function () {
+    $('#previewModal').hidden = true;
+  });
+  $('#previewModal').addEventListener('click', function (e) {
+    if (e.target === this) this.hidden = true;
+  });
   $('#groupModal').addEventListener('click', function (e) {
     if (e.target === this) this.hidden = true;
   });
@@ -240,6 +246,7 @@
       ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>'
       : '';
     return '<div class="plugin-row">' +
+      '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(item.name) + '" alt="">' +
       '<div class="plugin-info">' +
       '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
       '<div class="plugin-desc">' + (item.description || '') + '</div>' +
@@ -258,6 +265,18 @@
     if (d.catalogError) {
       $('#marketList').innerHTML = '<span class="muted">目录获取失败: ' + d.catalogError + '</span>';
     }
+    document.querySelectorAll('.plugin-thumb').forEach(function (img) {
+      img.onerror = function () { this.classList.add('ph'); };
+    });
+    document.querySelectorAll('.plugin-thumb').forEach(function (img) {
+      img.addEventListener('click', function () {
+        if (img.src && img.src.indexOf('http') === 0 && !img.classList.contains('ph')) {
+          var m = document.querySelector('#previewModal');
+          m.querySelector('img').src = img.src;
+          m.hidden = false;
+        }
+      });
+    });
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
       b.addEventListener('click', function () {
         var pkg = b.dataset.pkg;
