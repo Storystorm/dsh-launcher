@@ -1,0 +1,100 @@
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-logo"><svg viewBox="0 0 50 50" fill="currentColor"><path d="__WHALE_PATH__"/></svg></div>
+      <div>
+        <div class="brand-title">DeepSeek Harness</div>
+        <div class="brand-sub">启动器 · 安装与启动</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item" data-view="install"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v8M4.8 5.7L8 9l3.2-3.3"/><path d="M2.5 11.5v1.5a1 1 0 001 1h9a1 1 0 001-1v-1.5"/></svg></span>安装</button>
+      <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
+      <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
+      <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
+    </nav>
+    <div class="sidebar-foot" id="sidebarFoot">控制面板 v3.0</div>
+  </aside>
+  <main class="main">
+    <section class="view" id="view-install" hidden>
+      <h2 class="title">安装 DeepSeek Harness</h2>
+      <div class="card">
+        <div class="env-table" id="envTable"><span class="muted">正在检测环境…</span></div>
+        <div class="row" style="margin-top:14px;flex-wrap:wrap">
+          <button class="btn primary" id="btnInstall">一键安装</button>
+          <button class="btn outline" id="btnRecheck">重新检测</button>
+          <label class="checkbox-row" style="font-size:12px;margin-left:8px"><input id="forcePortable" type="checkbox">强制使用便携版 Node.js</label>
+        </div>
+        <div class="hint" id="installHint"></div>
+      </div>
+      <div class="card" id="installProgressCard" hidden>
+        <div class="row spread">
+          <div id="installMessage" style="font-weight:600">安装中…</div>
+          <span class="muted" id="installPercent" style="font-size:12px">0%</span>
+        </div>
+        <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+        <div class="log-box install-log" id="installLog"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn outline sm" id="btnCancelInstall">取消</button>
+        </div>
+      </div>
+    </section>
+    <section class="view" id="view-status">
+      <h2 class="title">服务状态</h2>
+      <div class="card">
+        <div class="row spread">
+          <div class="row">
+            <span class="dot stopped" id="statusDot"></span>
+            <div>
+              <div id="statusText" style="font-weight:600">正在检测…</div>
+              <div class="muted" id="statusDetail" style="font-size:12px"></div>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn outline sm" id="btnOpen" disabled>打开界面</button>
+            <button class="btn primary" id="btnStart">启动</button>
+            <button class="btn danger sm" id="btnStop" disabled>停止</button>
+          </div>
+        </div>
+        <div class="hint" id="statusNeedInstall" hidden style="margin-top:10px;color:var(--warn)">尚未安装 DeepSeek Harness,请先到「安装」页完成安装</div>
+      </div>
+      <div class="card">
+        <div class="muted" style="font-size:12px">访问地址</div>
+        <div style="margin-top:4px;font-size:14px"><a id="statusUrl" href="#" target="_blank">—</a></div>
+      </div>
+    </section>
+    <section class="view" id="view-settings" hidden>
+      <h2 class="title">启动设置</h2>
+      <div class="card">
+        <div class="field">
+          <label class="block" for="port">服务端口</label>
+          <div class="input-wrap"><input id="port" type="number" min="1" max="65535" placeholder="8787"></div>
+          <div class="hint">DSH Web UI 监听的端口,默认 8787</div>
+        </div>
+        <div class="field">
+          <label class="block" for="host">绑定地址</label>
+          <div class="input-wrap"><input id="host" type="text" placeholder="127.0.0.1"></div>
+          <div class="hint">默认 127.0.0.1 仅本机可访问;设为 0.0.0.0 可让局域网访问</div>
+        </div>
+        <div class="field">
+          <label class="checkbox-row"><input id="autoOpen" type="checkbox">启动完成后自动打开界面</label>
+        </div>
+        <div class="row">
+          <button class="btn primary" id="btnSave">保存设置</button>
+          <span class="muted" style="font-size:12px" id="saveHint"></span>
+        </div>
+        <div class="hint" style="margin-top:14px" id="cfgPaths"></div>
+      </div>
+    </section>
+    <section class="view" id="view-log" hidden>
+      <h2 class="title">运行日志</h2>
+      <div class="log-toolbar">
+        <button class="btn outline sm" id="btnRefreshLog">刷新</button>
+        <button class="btn outline sm" id="btnClearLog">清空</button>
+        <label class="checkbox-row" style="font-size:12px"><input id="autoScroll" type="checkbox" checked>自动滚动</label>
+        <span class="muted" id="logPath" style="font-size:12px"></span>
+      </div>
+      <div class="log-box" id="logBox">加载中…</div>
+    </section>
+  </main>
+</div>

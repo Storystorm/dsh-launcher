@@ -1,0 +1,4 @@
+#!/bin/bash
+# DeepSeek Harness 启动器 - Linux 入口
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/node/bin/node" "$DIR/launcher-server.js" "$@"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DeepSeek Harness 启动器
+Name[en]=DeepSeek Harness Launcher
+Comment=DeepSeek Harness 安装与启动面板
+Exec=__BIN_DIR__/dsh-launcher
+Icon=__ICON_DIR__/dsh-launcher.png
+Terminal=false
+Categories=Development;Utility;

@@ -1,0 +1,229 @@
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var views = ['install', 'status', 'settings', 'log'];
+  var busy = false;
+  var status = null;
+  var toastTimer = null;
+  var pollTimer = null;
+
+  function toast(msg) {
+    var t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+  }
+  function api(pathname, opts) {
+    return fetch(pathname, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+        return data;
+      });
+    });
+  }
+  function switchView(name) {
+    views.forEach(function (v) { $('#view-' + v).hidden = v !== name; });
+    document.querySelectorAll('.nav-item').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.view === name);
+    });
+  }
+  document.querySelectorAll('.nav-item').forEach(function (b) {
+    b.addEventListener('click', function () { switchView(b.dataset.view); });
+  });
+
+  // ---- 状态 ----
+  function renderStatus(st) {
+    st = st || { running: false, owned: false, url: '' };
+    status = st;
+    var dot = $('#statusDot');
+    dot.className = 'dot ' + (st.running ? 'running' : busy ? 'starting' : 'stopped');
+    $('#statusText').textContent = st.running ? '运行中' : busy ? '正在启动…' : '未运行';
+    $('#statusDetail').textContent = st.running
+      ? (st.owned ? ('PID ' + st.pid + ' · 由本启动器启动') : '非本启动器启动的实例(不可停止)')
+      : '点击「启动」开始服务';
+    $('#statusUrl').textContent = st.url || '—';
+    $('#statusUrl').href = st.url || '#';
+    $('#btnOpen').disabled = !st.running;
+    $('#btnStart').disabled = st.running || busy;
+    $('#btnStop').disabled = !(st.running && st.owned) || busy;
+  }
+  function refresh() {
+    return api('/api/status').then(renderStatus).catch(function () {
+      $('#statusText').textContent = '无法连接控制服务';
+    });
+  }
+
+  // ---- 设置 ----
+  function loadConfig() {
+    return api('/api/config').then(function (info) {
+      $('#port').value = info.config.port;
+      $('#host').value = info.config.host;
+      $('#autoOpen').checked = !!info.config.autoOpen;
+      $('#cfgPaths').textContent = '数据目录: ' + info.paths.dataDir + ' · 日志: ' + info.paths.log;
+      $('#logPath').textContent = info.paths.log;
+      $('#sidebarFoot').innerHTML = '控制面板 v' + info.version + '<br>仅本机可访问';
+    }).catch(function () {});
+  }
+
+  // ---- 日志 ----
+  function loadLog() {
+    return api('/api/log?lines=300').then(function (r) {
+      var box = $('#logBox');
+      var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.textContent = r.log || '(暂无日志)';
+      if ($('#autoScroll').checked || atBottom) box.scrollTop = box.scrollHeight;
+    }).catch(function () {});
+  }
+
+  // ---- 安装 ----
+  function pill(cls, text) {
+    return '<span class="pill ' + cls + '">' + text + '</span>';
+  }
+  function envRow(name, val, pillHtml) {
+    return '<div class="env-row"><div class="env-name">' + name + '</div>' +
+      '<div class="env-val">' + val + '</div>' + (pillHtml || '') + '</div>';
+  }
+  function loadEnv() {
+    return api('/api/env').then(function (env) {
+      var rows = [];
+      rows.push(envRow('系统', env.os + ' · ' + env.arch, pill('info', env.platform)));
+      var nodeText, nodePill;
+      if (env.nodeSystem) {
+        nodeText = '系统 Node.js v' + env.nodeSystem.version;
+        nodePill = pill('ok', '可用');
+      } else if (env.nodePortable) {
+        nodeText = '便携版 Node.js v' + env.nodePortable.version + '(本启动器安装)';
+        nodePill = pill('ok', '可用');
+      } else {
+        nodeText = '未检测到 Node.js,一键安装将自动下载便携版';
+        nodePill = pill('bad', '缺失');
+      }
+      rows.push(envRow('Node.js', nodeText, nodePill));
+      rows.push(envRow('npm', env.npmSystem ? '随系统 Node.js 提供' : (env.nodePortable ? '随便携版 Node.js 提供' : '未检测到(随便携版自动安装)'), env.nodeSystem ? pill('ok', '可用') : (env.nodePortable ? pill('ok', '可用') : pill('idle', '待装'))));
+      if (env.dsh) {
+        rows.push(envRow('DeepSeek Harness', (env.dsh.version || '已安装') + ' · ' + (env.dsh.source === 'system' ? '系统已存在' : '本启动器安装'), pill('ok', '已安装')));
+      } else {
+        rows.push(envRow('DeepSeek Harness', '未安装,点击「一键安装」', pill('bad', '未安装')));
+      }
+      rows.push(envRow('安装位置', env.paths.dataDir, null));
+      $('#envTable').innerHTML = rows.join('');
+      $('#statusNeedInstall').hidden = !!env.dsh;
+      $('#installHint').textContent = env.dsh
+        ? '已检测到 DeepSeek Harness,可直接到「状态」页启动;「一键安装」将(重新)安装到本启动器目录。'
+        : '将自动下载 Node.js(如需要)并通过 npm 安装 DeepSeek Harness,全程无需命令行。';
+    }).catch(function () {
+      $('#envTable').innerHTML = '<span class="muted">环境检测失败</span>';
+    });
+  }
+
+  function renderInstall(snap) {
+    snap = snap || {};
+    $('#installProgressCard').hidden = false;
+    $('#installMessage').textContent = snap.message || '';
+    $('#installPercent').textContent = (snap.percent || 0) + '%';
+    $('#progressBar').style.width = (snap.percent || 0) + '%';
+    var box = $('#installLog');
+    box.textContent = (snap.log || []).join('\\n');
+    box.scrollTop = box.scrollHeight;
+    $('#btnInstall').disabled = !!snap.running;
+    $('#btnCancelInstall').disabled = !snap.running;
+    if (!snap.running) {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      if (snap.done) { toast('安装完成,前往「状态」页启动'); loadEnv(); }
+      else if (snap.canceled) { toast('已取消安装'); loadEnv(); }
+      else if (snap.error) { toast('安装失败: ' + snap.error); }
+      else { $('#installProgressCard').hidden = true; }
+    }
+  }
+
+  // ---- 事件 ----
+  $('#btnStart').addEventListener('click', function () {
+    busy = true;
+    renderStatus(status);
+    api('/api/start', { method: 'POST' }).then(function (r) {
+      if (r.ok) toast(r.alreadyRunning ? '服务已在运行' : '服务已启动');
+      else {
+        toast('启动失败: ' + (r.error || '未知错误'));
+        if (String(r.error).indexOf('尚未安装') >= 0) switchView('install');
+      }
+    }).catch(function (e) {
+      toast('启动失败: ' + e.message);
+    }).then(function () {
+      busy = false;
+      refresh();
+    });
+  });
+  $('#btnStop').addEventListener('click', function () {
+    busy = true;
+    api('/api/stop', { method: 'POST' }).then(function (r) {
+      toast(r.ok ? '已停止' : (r.error || '停止失败'));
+    }).catch(function (e) {
+      toast(e.message);
+    }).then(function () {
+      busy = false;
+      refresh();
+    });
+  });
+  $('#btnOpen').addEventListener('click', function () {
+    if (status && status.running) window.open(status.url, '_blank');
+  });
+  $('#btnSave').addEventListener('click', function () {
+    var body = {
+      port: Number($('#port').value),
+      host: $('#host').value.trim(),
+      autoOpen: $('#autoOpen').checked,
+    };
+    api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(function () {
+      $('#saveHint').textContent = '已保存';
+      toast('设置已保存');
+      refresh();
+    }).catch(function (e) {
+      toast('保存失败: ' + e.message);
+    });
+  });
+  $('#btnRefreshLog').addEventListener('click', loadLog);
+  $('#btnClearLog').addEventListener('click', function () {
+    api('/api/log-clear', { method: 'POST' }).then(loadLog);
+  });
+  $('#btnRecheck').addEventListener('click', function () {
+    loadEnv().then(function () { toast('检测完成'); });
+  });
+  $('#btnInstall').addEventListener('click', function () {
+    api('/api/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ portable: $('#forcePortable').checked }),
+    }).then(function () {
+      toast('开始安装…');
+      pollTimer = setInterval(function () {
+        api('/api/install/status').then(renderInstall).catch(function () {});
+      }, 800);
+    }).catch(function (e) {
+      toast(e.message);
+    });
+  });
+  $('#btnCancelInstall').addEventListener('click', function () {
+    api('/api/install/cancel', { method: 'POST' }).then(function () {
+      toast('正在取消…');
+    });
+  });
+
+  refresh();
+  loadConfig();
+  loadLog();
+  loadEnv();
+  api('/api/install/status').then(function (snap) {
+    if (snap.running) {
+      renderInstall(snap);
+      pollTimer = setInterval(function () {
+        api('/api/install/status').then(renderInstall).catch(function () {});
+      }, 800);
+    }
+  });
+  setInterval(refresh, 2000);
+  setInterval(function () { if (!$('#view-log').hidden) loadLog(); }, 3000);
+})();

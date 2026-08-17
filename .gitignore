@@ -1,0 +1,9 @@
+node_modules/
+*.part
+bin/
+dist/
+.DS_Store
+__MACOSX/
+*.dmg
+*.zip
+*.tar.gz
