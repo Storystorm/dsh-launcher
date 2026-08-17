@@ -1,0 +1,81 @@
+name: release-build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g @yao-pkg/pkg
+      - run: pkg src/launcher-server.js --targets node24-win-x64 --output dist/DeepSeek-Harness-Launcher-Windows-x64.exe --icon build/assets/icon.ico
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-exe
+          path: dist/DeepSeek-Harness-Launcher-Windows-x64.exe
+
+  build-mac-x64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g @yao-pkg/pkg
+      - run: pkg src/launcher-server.js --targets node24-macos-x64 --output dist/launcher
+      - run: bash build/build-mac-app.sh dist/launcher "dist/DeepSeek Harness.app" build/assets/AppIcon.icns
+      - run: hdiutil create -volname "DeepSeek Harness" -srcfolder "dist/DeepSeek Harness.app" -ov -format UDZO dist/DeepSeek-Harness-Launcher-macOS-x64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-x64-dmg
+          path: dist/DeepSeek-Harness-Launcher-macOS-x64.dmg
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install -g @yao-pkg/pkg
+      - run: pkg src/launcher-server.js --targets node24-linux-x64 --output dist/dsh-launcher
+      - run: |
+          chmod +x dist/dsh-launcher
+          mkdir -p linux-pkg
+          cp dist/dsh-launcher linux-pkg/dsh-launcher
+          cp build/linux/dsh-launcher.desktop linux-pkg/
+          cp build/linux/install-linux.sh linux-pkg/
+          cp build/assets/dsh-launcher.png linux-pkg/
+          tar -czf DeepSeek-Harness-Launcher-Linux-x64.tar.gz -C linux-pkg .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar
+          path: DeepSeek-Harness-Launcher-Linux-x64.tar.gz
+
+  release:
+    needs: [build-win, build-mac-x64, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+      - run: find release-assets -type f -exec mv {} ./ \;
+      - name: Create release
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes "Windows 版改为单文件 .exe(双击即可,自带运行环境)。三平台由 GitHub Actions 原生构建。" \
+            DeepSeek-Harness-Launcher-Windows-x64.exe \
+            DeepSeek-Harness-Launcher-macOS-x64.dmg \
+            DeepSeek-Harness-Launcher-Linux-x64.tar.gz
+        env:
+          GH_TOKEN: ${{ github.token }}

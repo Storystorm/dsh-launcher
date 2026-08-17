@@ -20,13 +20,13 @@
 |---|---|---|
 | macOS (Apple 芯片) | `DeepSeek-Harness-Launcher-macOS-arm64.dmg` | 单文件二进制 |
 | macOS (Intel) | `DeepSeek-Harness-Launcher-macOS-x64.dmg` | 内置便携 Node |
-| Windows x64 | `DeepSeek-Harness-Launcher-Windows-x64.zip` | 内置便携 Node |
+| Windows x64 | `DeepSeek-Harness-Launcher-Windows-x64.exe` | 单文件 exe |
 | Linux x64 | `DeepSeek-Harness-Launcher-Linux-x64.tar.gz` | 内置便携 Node |
 
 ## 使用
 
 1. **macOS**:打开 dmg,把 app 拖进「应用程序」或桌面,双击运行
-2. **Windows**:解压后双击 `启动器.vbs`(无命令行窗口)
+2. **Windows**:双击 `DeepSeek-Harness-Launcher-Windows-x64.exe`(自带运行环境,无需 Node)
 3. **Linux**:解压后运行 `bash install-linux.sh`,再从应用菜单启动;或直接运行 `./dsh-launcher`
 
 首次打开进入「安装」页 → 点击「一键安装」→ 完成后到「状态」页「启动」,自动打开 DSH Web UI(默认 <http://127.0.0.1:8787>)。面板地址 <http://127.0.0.1:8788>。

@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -859,6 +859,7 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
+      <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
     </nav>
     <div class="sidebar-foot" id="sidebarFoot">控制面板 v0.1.0</div>
   </aside>
@@ -953,13 +954,6 @@ const PAGE_HTML = `<div class="app">
           <div class="hint">用于检查新版本的仓库地址,留空使用默认值</div>
         </div>
       </div>
-      <div class="card">
-        <div class="card-title">社区</div>
-        <div class="row spread">
-          <span class="muted" style="font-size:12px">加入微信群,交流使用问题</span>
-          <button class="btn primary" id="btnJoinGroup">加入群聊</button>
-        </div>
-      </div>
     </section>
     <section class="view" id="view-log" hidden>
       <h2 class="title">运行日志</h2>
@@ -970,6 +964,16 @@ const PAGE_HTML = `<div class="app">
         <span class="muted" id="logPath" style="font-size:12px"></span>
       </div>
       <div class="log-box" id="logBox">加载中…</div>
+    </section>
+    <section class="view" id="view-community" hidden>
+      <h2 class="title">社区</h2>
+      <div class="card">
+        <div class="card-title">加入微信群</div>
+        <div class="row spread">
+          <span class="muted" style="font-size:12px">扫码加入微信群,交流使用问题、反馈建议</span>
+          <button class="btn primary" id="btnJoinGroup">加入群聊</button>
+        </div>
+      </div>
     </section>
   </main>
 </div>
@@ -983,7 +987,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log'];
+  var views = ['install', 'status', 'settings', 'log', 'community'];
   var busy = false;
   var status = null;
   var toastTimer = null;
