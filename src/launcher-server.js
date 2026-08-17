@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1649,7 +1649,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui', 'plugin'];
   var busy = false;
   var status = null;
   var toastTimer = null;

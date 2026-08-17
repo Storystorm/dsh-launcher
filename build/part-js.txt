@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui', 'plugin'];
   var busy = false;
   var status = null;
   var toastTimer = null;
