@@ -10,6 +10,7 @@
     <nav class="nav">
       <button class="nav-item" data-view="install"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v8M4.8 5.7L8 9l3.2-3.3"/><path d="M2.5 11.5v1.5a1 1 0 001 1h9a1 1 0 001-1v-1.5"/></svg></span>安装</button>
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
+      <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>监控</button>
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
@@ -73,6 +74,40 @@
         <div style="margin-top:4px;font-size:14px"><a id="statusUrl" href="#" target="_blank">—</a></div>
       </div>
     </section>
+    <section class="view" id="view-monitor" hidden>
+      <h2 class="title">监控看板</h2>
+      <div class="card">
+        <div class="card-title">Harness 服务</div>
+        <div class="row spread">
+          <div class="row">
+            <span class="dot stopped" id="monDot"></span>
+            <div>
+              <div style="font-weight:600" id="monStatus">—</div>
+              <div class="muted" style="font-size:12px" id="monMeta"></div>
+            </div>
+          </div>
+          <div class="row" id="monRes"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">DSH 信息</div>
+        <div class="env-row"><div class="env-name">版本</div><div class="env-val" id="monVersion">—</div></div>
+        <div class="env-row"><div class="env-name">数据目录</div><div class="env-val" id="monHome">—</div></div>
+        <div class="env-row"><div class="env-name">Profiles</div><div class="env-val" id="monProfiles">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">当前配置(settings.yaml · 密钥已脱敏)</div>
+        <pre class="mon-pre" id="monSettings">加载中…</pre>
+      </div>
+      <div class="card">
+        <div class="card-title">最近会话</div>
+        <div id="monSessions" class="plugin-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">存储</div>
+        <div id="monStorage" class="muted" style="font-size:12px"></div>
+      </div>
+    </section>
     <section class="view" id="view-settings" hidden>
       <h2 class="title">启动设置</h2>
       <div class="card">
@@ -128,8 +163,13 @@
       <div class="card">
         <div class="card-title">发帖</div>
         <textarea id="postText" rows="3" placeholder="分享你的使用体验、创意或提问…#话题" style="width:100%;max-width:640px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        <div id="imgPreviews" style="margin-top:4px"></div>
         <div class="row" style="margin-top:8px;justify-content:space-between">
-          <span class="muted" style="font-size:11px" id="postAuthHint"></span>
+          <div class="row">
+            <button class="btn outline sm" id="btnPickImg">📷 图片</button>
+            <input type="file" id="postImg" accept="image/*" multiple style="display:none">
+            <span class="muted" style="font-size:11px" id="postAuthHint"></span>
+          </div>
           <button class="btn primary sm" id="btnPost">发布</button>
         </div>
       </div>

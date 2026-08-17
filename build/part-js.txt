@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'monitor', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -231,7 +231,62 @@
     return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function tagHtml(s) {
-    return escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+    var out = escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+    out = out.replace(/!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)/g, '<img class="feed-img" src="$2" alt="$1">');
+    return out;
+  }
+  function imgCount(s) {
+    var m = String(s || '').match(/!\\[[^\\]]*\\]\\([^)\\s]+\\)/g);
+    return m ? m.length : 0;
+  }
+  // ---- 监控看板 ----
+  function fmtSize(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+    return b + ' B';
+  }
+  function loadMonitor() {
+    return api('/api/monitor').then(function (d) {
+      var s = d.service;
+      var dot = document.querySelector('#monDot');
+      if (dot) dot.className = 'dot ' + (s.running ? 'running' : 'stopped');
+      if (document.querySelector('#monStatus')) {
+        document.querySelector('#monStatus').textContent = s.running ? '运行中' : '未运行';
+        document.querySelector('#monMeta').textContent = s.running
+          ? ('PID ' + s.pid + ' · 已运行 ' + (s.uptimeSec ? fmtUp(s.uptimeSec) : '—') + ' · ' + s.url)
+          : '启动服务后展示运行信息';
+      }
+      var res = document.querySelector('#monRes');
+      if (res && d.process) {
+        res.innerHTML = '<span class="pill info">CPU ' + d.process.cpu + '%</span>' +
+          '<span class="pill info">内存 ' + d.process.memMB + ' MB</span>';
+      } else if (res) { res.innerHTML = ''; }
+      if (document.querySelector('#monVersion')) document.querySelector('#monVersion').textContent = d.dsh.version || '未知';
+      if (document.querySelector('#monHome')) document.querySelector('#monHome').textContent = d.dsh.home;
+      if (document.querySelector('#monProfiles')) {
+        document.querySelector('#monProfiles').textContent = (d.dsh.profiles || []).join('、') || '(无)';
+      }
+      if (document.querySelector('#monSettings')) document.querySelector('#monSettings').textContent = (d.settings || []).join('\\n');
+      var sl = document.querySelector('#monSessions');
+      if (sl) {
+        sl.innerHTML = (d.sessions || []).length
+          ? d.sessions.map(function (x) {
+            return '<div class="plugin-row"><div class="plugin-info">' +
+              '<div class="plugin-name" style="font-weight:500">' + x.name + '</div>' +
+              '<div class="plugin-meta">' + fmtRelative(x.at) + ' · ' + fmtSize(x.size) + '</div>' +
+              '</div></div>';
+          }).join('')
+          : '<span class="muted">暂无会话记录</span>';
+      }
+      var st = document.querySelector('#monStorage');
+      if (st) st.textContent = 'DSH 数据目录: ' + d.storage.dshHomeMB + ' MB · 启动器数据: ' + d.storage.dataDirMB + ' MB';
+    }).catch(function () {});
+  }
+  function fmtUp(sec) {
+    if (sec < 60) return sec + ' 秒';
+    if (sec < 3600) return Math.floor(sec / 60) + ' 分钟';
+    if (sec < 86400) return Math.floor(sec / 3600) + ' 小时 ' + Math.floor((sec % 3600) / 60) + ' 分';
+    return Math.floor(sec / 86400) + ' 天';
   }
   function fmtRelative(iso) {
     if (!iso) return '';
@@ -258,6 +313,7 @@
       '<div class="feed-time">' + fmtRelative(p.at) + '</div></div>' +
       '</div>' +
       '<div class="feed-body">' + tagHtml(p.body) + '</div>' +
+      (imgCount(p.body) ? '<div class="plugin-meta">' + imgCount(p.body) + ' 图</div>' : '') +
       '<div class="feed-actions">' +
       '<button class="feed-act" data-like="' + p.number + '">👍 ' + p.likes + '</button>' +
       '<span class="feed-act">💬 ' + p.comments + '</span>' +
@@ -364,16 +420,63 @@
       }).catch(function (err) { toast(err.message); });
     });
   }
+  var pendingImages = [];
+  function renderImgPreviews() {
+    var el = document.querySelector('#imgPreviews');
+    if (!el) return;
+    el.innerHTML = pendingImages.map(function (u, i) {
+      return '<span class="img-preview"><img src="' + u + '"><button class="img-del" data-i="' + i + '">×</button></span>';
+    }).join('');
+    document.querySelectorAll('#imgPreviews .img-del').forEach(function (b) {
+      b.addEventListener('click', function () {
+        pendingImages.splice(Number(b.dataset.i), 1);
+        renderImgPreviews();
+      });
+    });
+  }
+  function uploadImage(file) {
+    if (file.size > 2 * 1024 * 1024) { toast('图片超过 2MB'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result);
+      var base64 = dataUrl.split(',')[1] || '';
+      api('/api/posts/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name || 'img.png', data: base64 }),
+      }).then(function (r) {
+        if (r.url) {
+          pendingImages.push(r.url);
+          renderImgPreviews();
+          toast('图片已就绪');
+        }
+      }).catch(function (err) { toast('图片上传失败: ' + err.message); });
+    };
+    reader.readAsDataURL(file);
+  }
+  $('#btnPickImg').addEventListener('click', function () {
+    document.querySelector('#postImg').click();
+  });
+  $('#postImg').addEventListener('change', function () {
+    var files = document.querySelector('#postImg').files;
+    for (var i = 0; i < files.length; i++) uploadImage(files[i]);
+    document.querySelector('#postImg').value = '';
+  });
   $('#btnPost').addEventListener('click', function () {
     if (!authUser) { toast('请先登录'); openLoginModal(); return; }
     var text = document.querySelector('#postText').value.trim();
-    if (!text) { toast('写点什么再发布'); return; }
+    if (!text && pendingImages.length === 0) { toast('写点什么再发布'); return; }
+    if (pendingImages.length) {
+      text = text + (text ? '\\n' : '') + pendingImages.map(function (u) { return '\\n![图片](' + u + ')'; }).join('');
+    }
     api('/api/posts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text }),
     }).then(function () {
       document.querySelector('#postText').value = '';
+      pendingImages = [];
+      renderImgPreviews();
       toast('发布成功');
       loadFeed(feedTab);
     }).catch(function (err) { toast('发布失败: ' + err.message); });
@@ -905,6 +1008,8 @@
   loadAuth();
   loadFeed('all');
   renderPostAuth();
+  loadMonitor();
+  setInterval(loadMonitor, 5000);
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);

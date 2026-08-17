@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.0';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1323,6 +1323,83 @@ function deleteReview(repo, id) {
   return { ok: true, removed: before - entry.comments.length };
 }
 
+// ================================================================ 监控看板
+function dirSize(dir) {
+  let total = 0;
+  try {
+    for (const n of fs.readdirSync(dir)) {
+      try {
+        const fp = path.join(dir, n);
+        const st = fs.statSync(fp);
+        if (st.isDirectory()) total += dirSize(fp);
+        else total += st.size;
+        if (total > 2 * 1024 * 1024 * 1024) break;
+      } catch (e) {}
+    }
+  } catch (e) {}
+  return total;
+}
+function fmtUptime(sec) {
+  if (!sec || sec < 0) return '—';
+  if (sec < 60) return sec + ' 秒';
+  if (sec < 3600) return Math.floor(sec / 60) + ' 分钟';
+  if (sec < 86400) return Math.floor(sec / 3600) + ' 小时 ' + Math.floor((sec % 3600) / 60) + ' 分';
+  return Math.floor(sec / 86400) + ' 天 ' + Math.floor((sec % 86400) / 3600) + ' 小时';
+}
+const SECRET_KEY_RE = /(key|token|secret|password|credential|api[_\-]?key)/i;
+async function getMonitor() {
+  const st = await getStatus();
+  let proc = null;
+  if (st.pid) {
+    try {
+      const out = spawnSync('/bin/ps', ['-p', String(st.pid), '-o', '%cpu=,rss='], { encoding: 'utf8', timeout: 5000 });
+      const parts = String(out.stdout || '').trim().split(/\s+/);
+      if (parts.length >= 2) proc = { cpu: parseFloat(parts[0]) || 0, memMB: Math.round((parseInt(parts[1], 10) || 0) / 1024) };
+    } catch (e) {}
+  }
+  const run = resolveRun();
+  const dshVer = run ? dshVersion(run.node, run.bin) : null;
+  let profiles = [];
+  try {
+    profiles = fs.readdirSync(path.join(DSH_HOME_DIR, 'profiles')).filter(n => !n.startsWith('.') && n !== 'node_modules');
+  } catch (e) {}
+  let settingsLines = [];
+  try {
+    const sy = fs.readFileSync(path.join(DSH_HOME_DIR, 'settings.yaml'), 'utf8');
+    settingsLines = sy.split(/\r?\n/).slice(0, 60).map(s => {
+      const line = s.slice(0, 120);
+      if (SECRET_KEY_RE.test(line)) {
+        const idx = line.indexOf(':');
+        return idx >= 0 ? line.slice(0, idx + 1) + ' ***' : '***';
+      }
+      return line;
+    });
+  } catch (e) {}
+  let sessions = [];
+  try {
+    const sd = path.join(DSH_HOME_DIR, 'sessions');
+    sessions = fs.readdirSync(sd).map(n => {
+      const fp = path.join(sd, n);
+      const s = fs.statSync(fp);
+      return { name: n, at: s.mtime.toISOString(), size: s.isDirectory() ? dirSize(fp) : s.size };
+    }).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 10);
+  } catch (e) {}
+  let dshHomeMB = 0;
+  try { dshHomeMB = Math.round(dirSize(DSH_HOME_DIR) / 1048576); } catch (e) {}
+  return {
+    service: {
+      running: st.running, owned: st.owned, pid: st.pid, url: st.url, port: st.port,
+      startedAt: st.startedAt,
+      uptimeSec: st.startedAt ? Math.round((Date.now() - st.startedAt) / 1000) : 0,
+    },
+    process: proc,
+    dsh: { version: dshVer, home: DSH_HOME_DIR, profiles: profiles },
+    settings: settingsLines,
+    sessions: sessions,
+    storage: { dshHomeMB: dshHomeMB, dataDir: DATA_DIR, dataDirMB: Math.round(dirSize(DATA_DIR) / 1048576) },
+  };
+}
+
 // ================================================================ 社区时间线(GitHub Issues 存储)
 const COMMUNITY_REPO = 'Storystorm/dsh-community';
 
@@ -1633,7 +1710,12 @@ a:hover{text-decoration:underline}
 .feed-tag{color:var(--brand-strong)}
 .feed-actions{display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--label-tertiary)}
 .feed-act{display:inline-flex;align-items:center;gap:4px;background:none;border:none;padding:0;cursor:pointer;font-size:12px;color:var(--label-tertiary);font-family:inherit}
-.feed-act:hover{color:var(--brand-strong)}`;
+.feed-act:hover{color:var(--brand-strong)}
+.mon-pre{background:#0f1115;color:#c9d1d9;font-family:var(--font-code);font-size:12px;line-height:18px;border-radius:8px;padding:12px 14px;max-height:280px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all}
+.feed-img{max-width:180px;max-height:180px;border-radius:8px;border:1px solid var(--border-l2);margin-top:6px;margin-right:6px;object-fit:cover}
+.img-preview{position:relative;display:inline-block;margin:4px 6px 0 0}
+.img-preview img{width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--border-l2)}
+.img-del{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--label-primary);color:#fff;border:none;font-size:11px;line-height:18px;cursor:pointer}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -1646,6 +1728,7 @@ const PAGE_HTML = `<div class="app">
     <nav class="nav">
       <button class="nav-item" data-view="install"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v8M4.8 5.7L8 9l3.2-3.3"/><path d="M2.5 11.5v1.5a1 1 0 001 1h9a1 1 0 001-1v-1.5"/></svg></span>安装</button>
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
+      <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>监控</button>
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
@@ -1709,6 +1792,40 @@ const PAGE_HTML = `<div class="app">
         <div style="margin-top:4px;font-size:14px"><a id="statusUrl" href="#" target="_blank">—</a></div>
       </div>
     </section>
+    <section class="view" id="view-monitor" hidden>
+      <h2 class="title">监控看板</h2>
+      <div class="card">
+        <div class="card-title">Harness 服务</div>
+        <div class="row spread">
+          <div class="row">
+            <span class="dot stopped" id="monDot"></span>
+            <div>
+              <div style="font-weight:600" id="monStatus">—</div>
+              <div class="muted" style="font-size:12px" id="monMeta"></div>
+            </div>
+          </div>
+          <div class="row" id="monRes"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">DSH 信息</div>
+        <div class="env-row"><div class="env-name">版本</div><div class="env-val" id="monVersion">—</div></div>
+        <div class="env-row"><div class="env-name">数据目录</div><div class="env-val" id="monHome">—</div></div>
+        <div class="env-row"><div class="env-name">Profiles</div><div class="env-val" id="monProfiles">—</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">当前配置(settings.yaml · 密钥已脱敏)</div>
+        <pre class="mon-pre" id="monSettings">加载中…</pre>
+      </div>
+      <div class="card">
+        <div class="card-title">最近会话</div>
+        <div id="monSessions" class="plugin-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">存储</div>
+        <div id="monStorage" class="muted" style="font-size:12px"></div>
+      </div>
+    </section>
     <section class="view" id="view-settings" hidden>
       <h2 class="title">启动设置</h2>
       <div class="card">
@@ -1764,8 +1881,13 @@ const PAGE_HTML = `<div class="app">
       <div class="card">
         <div class="card-title">发帖</div>
         <textarea id="postText" rows="3" placeholder="分享你的使用体验、创意或提问…#话题" style="width:100%;max-width:640px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        <div id="imgPreviews" style="margin-top:4px"></div>
         <div class="row" style="margin-top:8px;justify-content:space-between">
-          <span class="muted" style="font-size:11px" id="postAuthHint"></span>
+          <div class="row">
+            <button class="btn outline sm" id="btnPickImg">📷 图片</button>
+            <input type="file" id="postImg" accept="image/*" multiple style="display:none">
+            <span class="muted" style="font-size:11px" id="postAuthHint"></span>
+          </div>
           <button class="btn primary sm" id="btnPost">发布</button>
         </div>
       </div>
@@ -1922,7 +2044,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'monitor', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2153,7 +2275,62 @@ const PAGE_JS = `(function () {
     return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function tagHtml(s) {
-    return escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+    var out = escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+    out = out.replace(/!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)/g, '<img class="feed-img" src="$2" alt="$1">');
+    return out;
+  }
+  function imgCount(s) {
+    var m = String(s || '').match(/!\\[[^\\]]*\\]\\([^)\\s]+\\)/g);
+    return m ? m.length : 0;
+  }
+  // ---- 监控看板 ----
+  function fmtSize(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+    return b + ' B';
+  }
+  function loadMonitor() {
+    return api('/api/monitor').then(function (d) {
+      var s = d.service;
+      var dot = document.querySelector('#monDot');
+      if (dot) dot.className = 'dot ' + (s.running ? 'running' : 'stopped');
+      if (document.querySelector('#monStatus')) {
+        document.querySelector('#monStatus').textContent = s.running ? '运行中' : '未运行';
+        document.querySelector('#monMeta').textContent = s.running
+          ? ('PID ' + s.pid + ' · 已运行 ' + (s.uptimeSec ? fmtUp(s.uptimeSec) : '—') + ' · ' + s.url)
+          : '启动服务后展示运行信息';
+      }
+      var res = document.querySelector('#monRes');
+      if (res && d.process) {
+        res.innerHTML = '<span class="pill info">CPU ' + d.process.cpu + '%</span>' +
+          '<span class="pill info">内存 ' + d.process.memMB + ' MB</span>';
+      } else if (res) { res.innerHTML = ''; }
+      if (document.querySelector('#monVersion')) document.querySelector('#monVersion').textContent = d.dsh.version || '未知';
+      if (document.querySelector('#monHome')) document.querySelector('#monHome').textContent = d.dsh.home;
+      if (document.querySelector('#monProfiles')) {
+        document.querySelector('#monProfiles').textContent = (d.dsh.profiles || []).join('、') || '(无)';
+      }
+      if (document.querySelector('#monSettings')) document.querySelector('#monSettings').textContent = (d.settings || []).join('\\n');
+      var sl = document.querySelector('#monSessions');
+      if (sl) {
+        sl.innerHTML = (d.sessions || []).length
+          ? d.sessions.map(function (x) {
+            return '<div class="plugin-row"><div class="plugin-info">' +
+              '<div class="plugin-name" style="font-weight:500">' + x.name + '</div>' +
+              '<div class="plugin-meta">' + fmtRelative(x.at) + ' · ' + fmtSize(x.size) + '</div>' +
+              '</div></div>';
+          }).join('')
+          : '<span class="muted">暂无会话记录</span>';
+      }
+      var st = document.querySelector('#monStorage');
+      if (st) st.textContent = 'DSH 数据目录: ' + d.storage.dshHomeMB + ' MB · 启动器数据: ' + d.storage.dataDirMB + ' MB';
+    }).catch(function () {});
+  }
+  function fmtUp(sec) {
+    if (sec < 60) return sec + ' 秒';
+    if (sec < 3600) return Math.floor(sec / 60) + ' 分钟';
+    if (sec < 86400) return Math.floor(sec / 3600) + ' 小时 ' + Math.floor((sec % 3600) / 60) + ' 分';
+    return Math.floor(sec / 86400) + ' 天';
   }
   function fmtRelative(iso) {
     if (!iso) return '';
@@ -2180,6 +2357,7 @@ const PAGE_JS = `(function () {
       '<div class="feed-time">' + fmtRelative(p.at) + '</div></div>' +
       '</div>' +
       '<div class="feed-body">' + tagHtml(p.body) + '</div>' +
+      (imgCount(p.body) ? '<div class="plugin-meta">' + imgCount(p.body) + ' 图</div>' : '') +
       '<div class="feed-actions">' +
       '<button class="feed-act" data-like="' + p.number + '">👍 ' + p.likes + '</button>' +
       '<span class="feed-act">💬 ' + p.comments + '</span>' +
@@ -2286,16 +2464,63 @@ const PAGE_JS = `(function () {
       }).catch(function (err) { toast(err.message); });
     });
   }
+  var pendingImages = [];
+  function renderImgPreviews() {
+    var el = document.querySelector('#imgPreviews');
+    if (!el) return;
+    el.innerHTML = pendingImages.map(function (u, i) {
+      return '<span class="img-preview"><img src="' + u + '"><button class="img-del" data-i="' + i + '">×</button></span>';
+    }).join('');
+    document.querySelectorAll('#imgPreviews .img-del').forEach(function (b) {
+      b.addEventListener('click', function () {
+        pendingImages.splice(Number(b.dataset.i), 1);
+        renderImgPreviews();
+      });
+    });
+  }
+  function uploadImage(file) {
+    if (file.size > 2 * 1024 * 1024) { toast('图片超过 2MB'); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var dataUrl = String(reader.result);
+      var base64 = dataUrl.split(',')[1] || '';
+      api('/api/posts/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name || 'img.png', data: base64 }),
+      }).then(function (r) {
+        if (r.url) {
+          pendingImages.push(r.url);
+          renderImgPreviews();
+          toast('图片已就绪');
+        }
+      }).catch(function (err) { toast('图片上传失败: ' + err.message); });
+    };
+    reader.readAsDataURL(file);
+  }
+  $('#btnPickImg').addEventListener('click', function () {
+    document.querySelector('#postImg').click();
+  });
+  $('#postImg').addEventListener('change', function () {
+    var files = document.querySelector('#postImg').files;
+    for (var i = 0; i < files.length; i++) uploadImage(files[i]);
+    document.querySelector('#postImg').value = '';
+  });
   $('#btnPost').addEventListener('click', function () {
     if (!authUser) { toast('请先登录'); openLoginModal(); return; }
     var text = document.querySelector('#postText').value.trim();
-    if (!text) { toast('写点什么再发布'); return; }
+    if (!text && pendingImages.length === 0) { toast('写点什么再发布'); return; }
+    if (pendingImages.length) {
+      text = text + (text ? '\\n' : '') + pendingImages.map(function (u) { return '\\n![图片](' + u + ')'; }).join('');
+    }
     api('/api/posts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text }),
     }).then(function () {
       document.querySelector('#postText').value = '';
+      pendingImages = [];
+      renderImgPreviews();
       toast('发布成功');
       loadFeed(feedTab);
     }).catch(function (err) { toast('发布失败: ' + err.message); });
@@ -2827,6 +3052,8 @@ const PAGE_JS = `(function () {
   loadAuth();
   loadFeed('all');
   renderPostAuth();
+  loadMonitor();
+  setInterval(loadMonitor, 5000);
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
@@ -2898,6 +3125,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, PAGE, 'text/html; charset=utf-8');
     }
     if (p === '/api/status' && m === 'GET') return sendJSON(res, 200, await getStatus());
+    if (p === '/api/monitor' && m === 'GET') return sendJSON(res, 200, await getMonitor());
     if (p === '/api/env' && m === 'GET') return sendJSON(res, 200, await getEnv());
     if (p === '/api/config' && m === 'GET') {
       return sendJSON(res, 200, {
@@ -3069,6 +3297,25 @@ const server = http.createServer(async (req, res) => {
       try {
         await ghApi('/repos/' + COMMUNITY_REPO + '/issues/' + n + '/comments', { method: 'POST', body: { body: text } });
         return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        return sendJSON(res, 502, { error: e.message });
+      }
+    }
+    if (p === '/api/posts/upload' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      if (!authStore || !authStore.user) return sendJSON(res, 401, { error: '请先登录' });
+      const data = String(body.data || '');
+      if (!data) return sendJSON(res, 400, { error: '缺少图片数据' });
+      const name = String(body.name || 'image.png').slice(0, 80).replace(/[^A-Za-z0-9._-]/g, '_');
+      if (data.length > 2 * 1024 * 1024 * 1.4) return sendJSON(res, 400, { error: '图片过大(限 2MB)' });
+      try {
+        const buf = Buffer.from(data, 'base64');
+        const pathName = 'images/' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6) + '-' + name;
+        const up = await ghApi('/repos/' + COMMUNITY_REPO + '/contents/' + encodeURIComponent(pathName), {
+          method: 'PUT',
+          body: { message: 'post image', content: buf.toString('base64'), branch: 'main' },
+        });
+        return sendJSON(res, 200, { ok: true, url: up.content && up.content.download_url });
       } catch (e) {
         return sendJSON(res, 502, { error: e.message });
       }
