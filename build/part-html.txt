@@ -13,6 +13,9 @@
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
+      <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
+      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件市场</button>
+      <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
     <div class="sidebar-foot" id="sidebarFoot">控制面板 v0.1.0</div>
   </aside>
@@ -126,6 +129,49 @@
           <span class="muted" style="font-size:12px">扫码加入微信群,交流使用问题、反馈建议</span>
           <button class="btn primary" id="btnJoinGroup">加入群聊</button>
         </div>
+      </div>
+    </section>
+    <section class="view" id="view-discover" hidden>
+      <h2 class="title">发现</h2>
+      <div class="card">
+        <div class="card-title">官方动态</div>
+        <div class="row spread">
+          <div>
+            <div style="font-weight:600">DeepSeek Harness <span id="dshLatest"></span></div>
+            <div class="muted" id="dshLatestMeta" style="font-size:12px"></div>
+          </div>
+          <a id="dshReleaseLink" href="https://github.com/deepseek-ai/deepseek-harness/releases/latest" target="_blank" class="btn outline sm" style="text-decoration:none">查看发布</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">热门插件 <span class="muted" style="font-weight:400">· GitHub Star 排行</span></div>
+        <div id="trendingList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">新晋更新 <span class="muted" style="font-weight:400">· 最近活跃</span></div>
+        <div id="newestList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+    </section>
+    <section class="view" id="view-market" hidden>
+      <h2 class="title">插件市场</h2>
+      <div class="card">
+        <div class="row spread" style="margin-bottom:6px">
+          <span class="muted" style="font-size:12px">来自 GitHub topic:dsh-plugin 的社区插件,点击「安装」后重启 dsh 生效</span>
+          <button class="btn outline sm" id="btnRefreshMarket">刷新</button>
+        </div>
+        <div id="marketList" class="plugin-list"><span class="muted">加载中…</span></div>
+        <div class="card" id="pluginJobCard" hidden style="margin-top:14px;box-shadow:none;border:1px solid var(--border-l2)">
+          <div class="card-title" id="pluginJobTitle">插件安装</div>
+          <div class="log-box" id="pluginJobLog" style="height:150px"></div>
+        </div>
+      </div>
+    </section>
+    <section class="view" id="view-ui" hidden>
+      <h2 class="title">界面</h2>
+      <div class="card">
+        <div class="card-title">UI 主题与皮肤插件</div>
+        <div class="hint" style="margin-bottom:10px">社区提供的主题 / 设计 / 皮肤插件,用于美化或替换 DSH Web UI;安装后重启 dsh 服务生效</div>
+        <div id="uiList" class="plugin-list"><span class="muted">加载中…</span></div>
       </div>
     </section>
   </main>

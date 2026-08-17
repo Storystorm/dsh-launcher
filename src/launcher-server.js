@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.1.3';
+const VERSION = '0.2.0';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -748,6 +748,186 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
+// ================================================================ 插件目录与发现
+let pluginCatalog = { trending: [], newest: [], uiThemes: [], checkedAt: 0, error: null };
+let pluginJob = null;
+let pluginChild = null;
+
+function ghSearch(q, sort, perPage) {
+  return new Promise((resolve, reject) => {
+    const url = 'https://api.github.com/search/repositories?q=' + encodeURIComponent(q) +
+      '&sort=' + sort + '&order=desc&per_page=' + perPage;
+    https.get(url, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' } }, res => {
+      let body = '';
+      res.on('data', c => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+        try {
+          const j = JSON.parse(body);
+          resolve((j.items || []).map(r => ({
+            name: r.full_name,
+            description: String(r.description || '').slice(0, 140),
+            stars: r.stargazers_count || 0,
+            html_url: r.html_url,
+            updated: String(r.updated_at || '').slice(0, 10),
+          })));
+        } catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
+async function refreshPluginCatalog(force) {
+  const now = Date.now();
+  if (!force && pluginCatalog.checkedAt && now - pluginCatalog.checkedAt < 10 * 60 * 1000) return pluginCatalog;
+  const fresh = { trending: [], newest: [], uiThemes: [], checkedAt: now, error: null };
+  try {
+    const pair = await Promise.all([
+      ghSearch('topic:dsh-plugin', 'stars', 15),
+      ghSearch('topic:dsh-plugin', 'updated', 15),
+    ]);
+    fresh.trending = pair[0];
+    fresh.newest = pair[1];
+    const seen = {};
+    const ui = [];
+    const kw = /theme|skin|design|dark|\bui\b|界面|主题|皮肤|美化/i;
+    for (const item of fresh.trending.concat(fresh.newest)) {
+      if (!seen[item.name] && kw.test(item.name + ' ' + item.description)) {
+        ui.push(item);
+        seen[item.name] = 1;
+      }
+    }
+    fresh.uiThemes = ui.slice(0, 10);
+  } catch (e) {
+    fresh.error = String(e && e.message || e);
+  }
+  pluginCatalog = fresh;
+  return pluginCatalog;
+}
+
+async function getDiscover() {
+  const cat = await refreshPluginCatalog(false);
+  const dsh = {
+    latest: null, name: null, at: null, error: null,
+    url: 'https://github.com/deepseek-ai/deepseek-harness/releases/latest',
+  };
+  try {
+    const data = await new Promise((resolve, reject) => {
+      https.get('https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest', {
+        headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' },
+      }, res => {
+        let body = '';
+        res.on('data', c => { body += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+          try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+        });
+      }).on('error', reject);
+    });
+    dsh.latest = data.tag_name || null;
+    dsh.name = data.name || data.tag_name || null;
+    dsh.at = String(data.published_at || '').slice(0, 10);
+  } catch (e) {
+    // 官方仓库可能没有 Releases,退而求其次用 tags + 仓库推送时间
+    try {
+      const pair = await Promise.all([
+        new Promise((resolve, reject) => {
+          https.get('https://api.github.com/repos/deepseek-ai/deepseek-harness/tags?per_page=1', {
+            headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' },
+          }, res => {
+            let body = '';
+            res.on('data', c => { body += c; });
+            res.on('end', () => {
+              if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+              try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
+            });
+          }).on('error', reject);
+        }),
+        new Promise((resolve, reject) => {
+          https.get('https://api.github.com/repos/deepseek-ai/deepseek-harness', {
+            headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' },
+          }, res => {
+            let body = '';
+            res.on('data', c => { body += c; });
+            res.on('end', () => {
+              if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+              try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
+            });
+          }).on('error', reject);
+        }),
+      ]);
+      const tags = Array.isArray(pair[0]) ? pair[0] : [];
+      const repo = pair[1];
+      if (tags.length) dsh.latest = tags[0].name || null;
+      dsh.name = dsh.latest ? ('DeepSeek Harness ' + dsh.latest) : '官方仓库持续更新中';
+      dsh.at = String(repo && repo.pushed_at || '').slice(0, 10);
+      dsh.error = null;
+    } catch (e2) {
+      dsh.error = String(e2 && e2.message || e2);
+    }
+  }
+  return {
+    dsh: dsh,
+    trending: cat.trending,
+    newest: cat.newest,
+    uiThemes: cat.uiThemes,
+    catalogError: cat.error,
+    checkedAt: cat.checkedAt,
+  };
+}
+
+function pluginSnapshot() {
+  if (!pluginJob) return { running: false, done: false, log: [] };
+  return {
+    running: pluginJob.running, pkg: pluginJob.pkg,
+    done: pluginJob.done, error: pluginJob.error,
+    log: pluginJob.log.slice(-120),
+  };
+}
+function runPluginInstall(pkg) {
+  if (pluginJob && pluginJob.running) return;
+  const job = { running: true, pkg: pkg, done: false, error: null, log: [] };
+  pluginJob = job;
+  const push = (m) => { job.log.push(m); if (job.log.length > 400) job.log.shift(); };
+  (async () => {
+    try {
+      const run = resolveRun();
+      if (!run) throw new Error('尚未安装 DeepSeek Harness,请先到「安装」页完成安装');
+      push('执行: dsh plugin --profile web add ' + pkg);
+      const child = spawn(run.node, [run.bin, 'plugin', '--profile', 'web', 'add', pkg], {
+        env: Object.assign({}, process.env, { DSH_HOME: DSH_HOME_DIR }),
+        cwd: HOME,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      pluginChild = child;
+      let buf = '';
+      const pump = (chunk) => {
+        buf += chunk.toString();
+        const lines = buf.split(/\r?\n/);
+        buf = lines.pop();
+        for (const line of lines) if (line.trim()) push(line.trim());
+      };
+      child.stdout.on('data', pump);
+      child.stderr.on('data', pump);
+      const code = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch (e) {}
+          reject(new Error('插件安装超时(5 分钟)'));
+        }, 5 * 60 * 1000);
+        child.on('close', c => { clearTimeout(timer); resolve(c); });
+      });
+      pluginChild = null;
+      if (code !== 0) throw new Error('dsh plugin add 退出码 ' + code);
+      push('✓ 插件安装完成,重启 dsh 服务后生效');
+      job.done = true;
+    } catch (e) {
+      job.error = String(e && e.message || e);
+      push('✗ 安装失败: ' + job.error);
+    }
+    job.running = false;
+  })();
+}
+
 // ================================================================ UI
 const FAVICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 50"><path d="' + WHALE_PATH + '" fill="#0f1115"/></svg>';
 
@@ -844,7 +1024,14 @@ a:hover{text-decoration:underline}
 .modal-overlay[hidden]{display:none}
 .modal-dialog{display:flex;flex-direction:column;align-items:center;gap:10px;background:var(--bg-layer-1);border-radius:12px;padding:24px 28px;box-shadow:0 0 1px 0 rgba(0,0,0,.2),0 12px 32px 0 rgba(0,0,0,.2)}
 .modal-title{font-size:16px;font-weight:600}
-.modal-img{width:280px;height:280px;object-fit:contain;border-radius:8px;border:1px solid var(--border-l2);background:#fff}`;
+.modal-img{width:280px;height:280px;object-fit:contain;border-radius:8px;border:1px solid var(--border-l2);background:#fff}
+.plugin-list{display:flex;flex-direction:column}
+.plugin-row{display:flex;align-items:flex-start;gap:10px;padding:10px 2px;border-bottom:1px solid var(--border-l1)}
+.plugin-row:last-child{border-bottom:none}
+.plugin-info{flex:1;min-width:0}
+.plugin-name{font-size:13px;font-weight:600;word-break:break-all}
+.plugin-desc{font-size:12px;color:var(--label-secondary);margin-top:2px}
+.plugin-meta{font-size:12px;color:var(--label-tertiary);margin-top:2px}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -860,6 +1047,9 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
+      <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
+      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件市场</button>
+      <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
     <div class="sidebar-foot" id="sidebarFoot">控制面板 v0.1.0</div>
   </aside>
@@ -975,6 +1165,49 @@ const PAGE_HTML = `<div class="app">
         </div>
       </div>
     </section>
+    <section class="view" id="view-discover" hidden>
+      <h2 class="title">发现</h2>
+      <div class="card">
+        <div class="card-title">官方动态</div>
+        <div class="row spread">
+          <div>
+            <div style="font-weight:600">DeepSeek Harness <span id="dshLatest"></span></div>
+            <div class="muted" id="dshLatestMeta" style="font-size:12px"></div>
+          </div>
+          <a id="dshReleaseLink" href="https://github.com/deepseek-ai/deepseek-harness/releases/latest" target="_blank" class="btn outline sm" style="text-decoration:none">查看发布</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">热门插件 <span class="muted" style="font-weight:400">· GitHub Star 排行</span></div>
+        <div id="trendingList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">新晋更新 <span class="muted" style="font-weight:400">· 最近活跃</span></div>
+        <div id="newestList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+    </section>
+    <section class="view" id="view-market" hidden>
+      <h2 class="title">插件市场</h2>
+      <div class="card">
+        <div class="row spread" style="margin-bottom:6px">
+          <span class="muted" style="font-size:12px">来自 GitHub topic:dsh-plugin 的社区插件,点击「安装」后重启 dsh 生效</span>
+          <button class="btn outline sm" id="btnRefreshMarket">刷新</button>
+        </div>
+        <div id="marketList" class="plugin-list"><span class="muted">加载中…</span></div>
+        <div class="card" id="pluginJobCard" hidden style="margin-top:14px;box-shadow:none;border:1px solid var(--border-l2)">
+          <div class="card-title" id="pluginJobTitle">插件安装</div>
+          <div class="log-box" id="pluginJobLog" style="height:150px"></div>
+        </div>
+      </div>
+    </section>
+    <section class="view" id="view-ui" hidden>
+      <h2 class="title">界面</h2>
+      <div class="card">
+        <div class="card-title">UI 主题与皮肤插件</div>
+        <div class="hint" style="margin-bottom:10px">社区提供的主题 / 设计 / 皮肤插件,用于美化或替换 DSH Web UI;安装后重启 dsh 服务生效</div>
+        <div id="uiList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+    </section>
   </main>
 </div>
 <div class="modal-overlay" id="groupModal" hidden>
@@ -987,7 +1220,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'ui'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -1221,6 +1454,80 @@ const PAGE_JS = `(function () {
   $('#groupModal').addEventListener('click', function (e) {
     if (e.target === this) this.hidden = true;
   });
+  // ---- 发现 / 插件市场 / 界面 ----
+  function pluginRowHtml(item, withInstall) {
+    var installBtn = withInstall
+      ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>'
+      : '';
+    return '<div class="plugin-row">' +
+      '<div class="plugin-info">' +
+      '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
+      '<div class="plugin-desc">' + (item.description || '') + '</div>' +
+      '<div class="plugin-meta">★ ' + item.stars + ' · 更新于 ' + item.updated + '</div>' +
+      '</div>' + installBtn + '</div>';
+  }
+  function renderDiscover(d) {
+    $('#trendingList').innerHTML = d.trending.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
+    $('#newestList').innerHTML = d.newest.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
+    $('#marketList').innerHTML = d.trending.concat(d.newest).map(function (i) { return pluginRowHtml(i, true); }).join('');
+    $('#uiList').innerHTML = d.uiThemes.length
+      ? d.uiThemes.map(function (i) { return pluginRowHtml(i, true); }).join('')
+      : '<span class="muted">暂无主题类插件</span>';
+    $('#dshLatest').textContent = d.dsh.latest ? ('最新 ' + d.dsh.latest) : '';
+    $('#dshLatestMeta').textContent = d.dsh.at ? ('最近更新 ' + d.dsh.at) : (d.dsh.name || '官方仓库动态');
+    if (d.catalogError) {
+      $('#marketList').innerHTML = '<span class="muted">目录获取失败: ' + d.catalogError + '</span>';
+    }
+    document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var pkg = b.dataset.pkg;
+        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\\n\\n确定安装?安装完成后需重启 dsh 服务生效。')) return;
+        b.disabled = true;
+        b.textContent = '安装中…';
+        api('/api/market/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pkg: pkg }),
+        }).then(function () {
+          toast('开始安装 ' + pkg);
+          $('#pluginJobCard').hidden = false;
+          $('#pluginJobTitle').textContent = '安装中: ' + pkg;
+          pollPluginJob();
+        }).catch(function (e) {
+          toast(e.message);
+          b.disabled = false;
+          b.textContent = '安装';
+        });
+      });
+    });
+  }
+  var pluginPoll = null;
+  function pollPluginJob() {
+    if (pluginPoll) clearInterval(pluginPoll);
+    pluginPoll = setInterval(function () {
+      api('/api/market/install/status').then(function (st) {
+        var box = $('#pluginJobLog');
+        box.textContent = (st.log || []).join('\\n');
+        box.scrollTop = box.scrollHeight;
+        if (!st.running) {
+          clearInterval(pluginPoll);
+          pluginPoll = null;
+          $('#pluginJobTitle').textContent = st.done ? ('安装完成: ' + st.pkg) : ('安装失败: ' + st.pkg);
+          toast(st.done ? '插件安装完成,重启 dsh 后生效' : ('安装失败: ' + (st.error || '未知错误')));
+          loadDiscover();
+        }
+      }).catch(function () {});
+    }, 1000);
+  }
+  function loadDiscover(force) {
+    return api('/api/discover' + (force ? '?force=1' : '')).then(renderDiscover).catch(function (e) {
+      $('#trendingList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  $('#btnRefreshMarket').addEventListener('click', function () {
+    toast('刷新目录…');
+    loadDiscover(true).then(function () { toast('目录已刷新'); });
+  });
   $('#btnRefreshLog').addEventListener('click', loadLog);
   $('#btnClearLog').addEventListener('click', function () {
     api('/api/log-clear', { method: 'POST' }).then(loadLog);
@@ -1253,6 +1560,7 @@ const PAGE_JS = `(function () {
   loadLog();
   loadEnv();
   loadUpdate();
+  loadDiscover();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
@@ -1344,6 +1652,19 @@ const server = http.createServer(async (req, res) => {
       const fresh = await checkUpdate(true);
       return sendJSON(res, 200, Object.assign({ current: VERSION, source: updateSource() }, fresh));
     }
+    if (p === '/api/discover' && m === 'GET') {
+      if (u.searchParams.get('force') === '1') await refreshPluginCatalog(true);
+      return sendJSON(res, 200, await getDiscover());
+    }
+    if (p === '/api/market/install' && m === 'POST') {
+      if (pluginJob && pluginJob.running) return sendJSON(res, 409, { error: '已有插件安装任务进行中' });
+      const body = JSON.parse(await readBody(req) || '{}');
+      const pkg = String(body.pkg || '').trim();
+      if (!/^[A-Za-z0-9@./_-]{1,200}$/.test(pkg)) return sendJSON(res, 400, { error: '无效的包名' });
+      runPluginInstall(pkg);
+      return sendJSON(res, 200, { ok: true });
+    }
+    if (p === '/api/market/install/status' && m === 'GET') return sendJSON(res, 200, pluginSnapshot());
     if (p === '/api/start' && m === 'POST') return sendJSON(res, 200, await startDsh());
     if (p === '/api/stop' && m === 'POST') return sendJSON(res, 200, await stopDsh());
     if (p === '/api/log' && m === 'GET') {
