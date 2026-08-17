@@ -59,10 +59,35 @@
       $('#port').value = info.config.port;
       $('#host').value = info.config.host;
       $('#autoOpen').checked = !!info.config.autoOpen;
+      if (info.config.update) {
+        $('#updateOwner').value = info.config.update.owner || '';
+        $('#updateRepo').value = info.config.update.repo || '';
+      }
       $('#cfgPaths').textContent = '数据目录: ' + info.paths.dataDir + ' · 日志: ' + info.paths.log;
       $('#logPath').textContent = info.paths.log;
       $('#sidebarFoot').innerHTML = '控制面板 v' + info.version + '<br>仅本机可访问';
     }).catch(function () {});
+  }
+
+  // ---- 更新检查 ----
+  function renderUpdate(u) {
+    if (!u) return;
+    $('#updateCurrent').textContent = '当前版本 v' + u.current;
+    var banner = $('#updateBanner');
+    if (u.hasUpdate) {
+      banner.hidden = false;
+      $('#updateLatest').textContent = 'v' + u.latest;
+      $('#updateLink').href = u.url || '#';
+      $('#updateResult').textContent = '发现新版本 v' + u.latest + ',点击「前往下载」获取';
+    } else {
+      banner.hidden = true;
+      $('#updateResult').textContent = u.error
+        ? ('检查失败: ' + u.error + '(自动重试中)')
+        : ('已是最新版本 (v' + u.current + '),每 6 小时自动检查一次');
+    }
+  }
+  function loadUpdate() {
+    return api('/api/update').then(renderUpdate).catch(function () {});
   }
 
   // ---- 日志 ----
@@ -172,6 +197,11 @@
       port: Number($('#port').value),
       host: $('#host').value.trim(),
       autoOpen: $('#autoOpen').checked,
+      update: {
+        owner: $('#updateOwner').value.trim(),
+        repo: $('#updateRepo').value.trim(),
+        intervalHours: 6,
+      },
     };
     api('/api/config', {
       method: 'POST',
@@ -184,6 +214,25 @@
     }).catch(function (e) {
       toast('保存失败: ' + e.message);
     });
+  });
+  $('#btnCheckUpdate').addEventListener('click', function () {
+    $('#updateResult').textContent = '正在检查…';
+    api('/api/update/check', { method: 'POST' }).then(function (u) {
+      renderUpdate(u);
+      toast(u.hasUpdate ? ('发现新版本 v' + u.latest) : (u.error ? '检查失败' : '已是最新版本'));
+    }).catch(function (e) {
+      $('#updateResult').textContent = '检查失败: ' + e.message;
+      toast('检查失败: ' + e.message);
+    });
+  });
+  $('#btnJoinGroup').addEventListener('click', function () {
+    $('#groupModal').hidden = false;
+  });
+  $('#btnCloseGroup').addEventListener('click', function () {
+    $('#groupModal').hidden = true;
+  });
+  $('#groupModal').addEventListener('click', function (e) {
+    if (e.target === this) this.hidden = true;
   });
   $('#btnRefreshLog').addEventListener('click', loadLog);
   $('#btnClearLog').addEventListener('click', function () {
@@ -216,6 +265,7 @@
   loadConfig();
   loadLog();
   loadEnv();
+  loadUpdate();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
@@ -226,4 +276,5 @@
   });
   setInterval(refresh, 2000);
   setInterval(function () { if (!$('#view-log').hidden) loadLog(); }, 3000);
+  setInterval(loadUpdate, 3600 * 1000);
 })();
