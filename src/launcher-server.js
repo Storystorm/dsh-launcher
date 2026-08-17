@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1368,11 +1368,40 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// ---- Windows:自动创建桌面快捷方式(每次启动确保存在) ----
+function ensureWindowsDesktopShortcut() {
+  if (!IS_WIN) return;
+  try {
+    const exe = process.execPath;
+    const dir = path.dirname(exe);
+    const script = [
+      "$ErrorActionPreference='SilentlyContinue'",
+      "$ws = New-Object -ComObject WScript.Shell",
+      "$desktop = [Environment]::GetFolderPath('Desktop')",
+      "$lnk = Join-Path $desktop 'DeepSeek Harness 启动器.lnk'",
+      "$s = $ws.CreateShortcut($lnk)",
+      "$s.TargetPath = '" + exe.replace(/'/g, "''") + "'",
+      "$s.WorkingDirectory = '" + dir.replace(/'/g, "''") + "'",
+      "$s.IconLocation = $s.TargetPath + ',0'",
+      "$s.Description = 'DeepSeek Harness 启动器'",
+      "$s.Save()",
+    ].join('; ');
+    const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8', timeout: 30000,
+    });
+    if (r.status === 0) console.log('[dsh-launcher] 已在桌面创建快捷方式');
+    else console.log('[dsh-launcher] 创建快捷方式失败: ' + String(r.stderr || '').trim());
+  } catch (e) {
+    console.log('[dsh-launcher] 创建快捷方式异常: ' + e.message);
+  }
+}
+
 server.listen(UI_PORT, UI_HOST, () => {
   console.log('dsh-launcher v' + VERSION + ' listening on http://' + UI_HOST + ':' + UI_PORT);
   if (!NO_OPEN) {
     setTimeout(() => openUrl(PANEL_URL()), 600);
   }
+  setTimeout(ensureWindowsDesktopShortcut, 2000);
 });
 server.on('error', err => {
   if (err.code === 'EADDRINUSE') {
