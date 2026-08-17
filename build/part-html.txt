@@ -14,7 +14,7 @@
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
       <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
-      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件市场</button>
+      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
       <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
     <div class="sidebar-foot" id="sidebarFoot">控制面板 v0.1.0</div>
@@ -153,7 +153,7 @@
       </div>
     </section>
     <section class="view" id="view-market" hidden>
-      <h2 class="title">插件市场</h2>
+      <h2 class="title">插件</h2>
       <div class="card">
         <div class="row spread" style="margin-bottom:6px">
           <span class="muted" style="font-size:12px">来自 GitHub topic:dsh-plugin 的社区插件,点击「安装」后重启 dsh 生效</span>
@@ -164,6 +164,57 @@
           <div class="card-title" id="pluginJobTitle">插件安装</div>
           <div class="log-box" id="pluginJobLog" style="height:150px"></div>
         </div>
+      </div>
+    </section>
+    <section class="view" id="view-plugin" hidden>
+      <h2 class="title" style="display:flex;align-items:center;gap:10px">
+        <button class="btn outline sm" id="btnBackPlugin">← 返回插件列表</button>
+      </h2>
+      <div class="card" id="pluginDetailCard">
+        <div class="row" style="align-items:flex-start">
+          <img class="plugin-thumb" id="pdThumb" src="" alt="" style="width:72px;height:72px">
+          <div style="flex:1;min-width:0">
+            <div class="row spread">
+              <div class="plugin-name" id="pdName" style="font-size:16px">—</div>
+              <div class="row">
+                <button class="btn outline sm" id="pdInstall">安装</button>
+                <a class="btn outline sm" id="pdLink" href="#" target="_blank" style="text-decoration:none">GitHub</a>
+              </div>
+            </div>
+            <div class="plugin-meta" id="pdMeta"></div>
+            <div class="plugin-desc" id="pdDesc" style="margin-top:6px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="align-items:flex-start;gap:24px">
+          <div class="score-box">
+            <div class="score-num" id="pdScore">—</div>
+            <div class="score-stars" id="pdStars"></div>
+            <div class="muted" style="font-size:11px" id="pdScoreHint">综合评分</div>
+          </div>
+          <div class="score-dims" id="pdDims" style="flex:1;min-width:0"></div>
+        </div>
+        <div style="margin-top:14px">
+          <div id="pdTagline" style="font-weight:600"></div>
+          <div id="pdIntro" class="muted" style="margin-top:6px;font-size:13px"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="color:var(--success)">优点</div>
+        <ul class="review-list" id="pdPros"></ul>
+      </div>
+      <div class="card">
+        <div class="card-title" style="color:var(--error)">缺点</div>
+        <ul class="review-list" id="pdCons"></ul>
+      </div>
+      <div class="card">
+        <div class="card-title">适合人群</div>
+        <div id="pdAudience" style="font-size:13px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">简评</div>
+        <ul class="review-list" id="pdComments"></ul>
       </div>
     </section>
     <section class="view" id="view-ui" hidden>

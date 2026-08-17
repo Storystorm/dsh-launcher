@@ -242,16 +242,15 @@
   });
   // ---- 发现 / 插件市场 / 界面 ----
   function pluginRowHtml(item, withInstall) {
-    var installBtn = withInstall
-      ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>'
-      : '';
+    var btns = '<button class="btn outline sm" data-review="' + item.name + '">评测</button>' +
+      (withInstall ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>' : '');
     return '<div class="plugin-row">' +
       '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(item.name) + '" alt="">' +
       '<div class="plugin-info">' +
       '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
       '<div class="plugin-desc">' + (item.description || '') + '</div>' +
       '<div class="plugin-meta">★ ' + item.stars + ' · 更新于 ' + item.updated + '</div>' +
-      '</div>' + installBtn + '</div>';
+      '</div>' + btns + '</div>';
   }
   function renderDiscover(d) {
     $('#trendingList').innerHTML = d.trending.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
@@ -275,6 +274,11 @@
           m.querySelector('img').src = img.src;
           m.hidden = false;
         }
+      });
+    });
+    document.querySelectorAll('.plugin-row [data-review]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        openPluginDetail(b.dataset.review);
       });
     });
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
@@ -326,6 +330,107 @@
   $('#btnRefreshMarket').addEventListener('click', function () {
     toast('刷新目录…');
     loadDiscover(true).then(function () { toast('目录已刷新'); });
+  });
+  // ---- 插件评测详情页 ----
+  function openPluginDetail(repo) {
+    switchView('plugin');
+    $('#pluginDetailCard').innerHTML = '<span class="muted">加载评测中…</span>';
+    api('/api/plugin-detail?repo=' + encodeURIComponent(repo)).then(renderPluginDetail).catch(function (e) {
+      $('#pluginDetailCard').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  function starsHtml(score) {
+    var full = Math.round(score);
+    var s = '';
+    for (var i = 1; i <= 5; i++) s += '<span class="' + (i <= full ? '' : 'off') + '">★</span>';
+    return s;
+  }
+  function dimHtml(label, val) {
+    return '<div class="dim-row"><span class="dim-label">' + label + '</span>' +
+      '<div class="dim-bar"><div class="dim-fill" style="width:' + Math.round(val * 10) + '%"></div></div>' +
+      '<span class="dim-val">' + val + '</span></div>';
+  }
+  function renderPluginDetail(d) {
+    var info = d.info || {};
+    var rv = d.review || {};
+    var thumb = document.createElement('div');
+    var card = $('#pluginDetailCard');
+    card.innerHTML =
+      '<div class="row" style="align-items:flex-start">' +
+      '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(d.repo) + '" alt="" style="width:72px;height:72px">' +
+      '<div style="flex:1;min-width:0">' +
+      '<div class="row spread">' +
+      '<div class="plugin-name" style="font-size:16px">' + d.repo + '</div>' +
+      '<div class="row">' +
+      '<button class="btn outline sm" id="pdInstall" data-pkg="' + d.repo + '">安装</button>' +
+      '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>' +
+      '</div>' +
+      '</div>' +
+      '<div class="plugin-meta">★ ' + (info.stars || 0) + ' · 更新于 ' + (info.updated || '—') + (rv.auto ? ' · 自动评测' : ' · 编辑评测') + '</div>' +
+      '<div class="plugin-desc" style="margin-top:6px">' + (info.description || '') + '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card" style="margin:14px 0 0;box-shadow:none;border:1px solid var(--border-l2)">' +
+      '<div class="row" style="align-items:flex-start;gap:24px">' +
+      '<div class="score-box">' +
+      '<div class="score-num">' + rv.score + '</div>' +
+      '<div class="score-stars">' + starsHtml(rv.score) + '</div>' +
+      '<div class="muted" style="font-size:11px">综合评分 / 10</div>' +
+      '</div>' +
+      '<div class="score-dims" style="flex:1;min-width:0">' +
+      dimHtml('热度', rv.dims ? rv.dims.hot : 0) +
+      dimHtml('活跃度', rv.dims ? rv.dims.active : 0) +
+      dimHtml('文档质量', rv.dims ? rv.dims.docs : 0) +
+      dimHtml('易用性', rv.dims ? rv.dims.easy : 0) +
+      '</div>' +
+      '</div>' +
+      '<div style="margin-top:14px">' +
+      '<div style="font-weight:600">' + (rv.tagline || '') + '</div>' +
+      '<div class="muted" style="margin-top:6px;font-size:13px">' + (rv.intro || '') + '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title" style="color:var(--success)">优点</div>' +
+      '<ul class="review-list">' + (rv.pros || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title" style="color:var(--error)">缺点</div>' +
+      '<ul class="review-list">' + (rv.cons || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">适合人群</div>' +
+      '<div style="font-size:13px">' + (rv.audience || '') + '</div>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">简评</div>' +
+      '<ul class="review-list">' + (rv.comments || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>';
+    var ib = document.querySelector('#pdInstall');
+    if (ib) {
+      ib.addEventListener('click', function () {
+        var pkg = ib.dataset.pkg;
+        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\\n\\n确定安装?')) return;
+        ib.disabled = true;
+        ib.textContent = '安装中…';
+        api('/api/market/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pkg: pkg }),
+        }).then(function () {
+          toast('开始安装 ' + pkg);
+          $('#pluginJobCard').hidden = false;
+          $('#pluginJobTitle').textContent = '安装中: ' + pkg;
+          pollPluginJob();
+        }).catch(function (e) {
+          toast(e.message);
+          ib.disabled = false;
+          ib.textContent = '安装';
+        });
+      });
+    }
+  }
+  $('#btnBackPlugin').addEventListener('click', function () {
+    switchView('market');
   });
   $('#btnRefreshLog').addEventListener('click', loadLog);
   $('#btnClearLog').addEventListener('click', function () {

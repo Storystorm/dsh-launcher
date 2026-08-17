@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -66,6 +66,14 @@ function saveJSON(file, obj) {
 
 let config = loadJSON(CONFIG_PATH, DEFAULTS);
 let state = loadJSON(STATE_PATH, {});
+
+// GitHub API 请求头:有 GH_TOKEN 时用令牌(更高限额),否则匿名
+const GH_AUTH_HEADERS = (() => {
+  const t = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  const h = { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' };
+  if (t) h.Authorization = 'Bearer ' + t;
+  return h;
+})();
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function openCmd() {
@@ -718,7 +726,7 @@ async function checkUpdate(force) {
   };
   try {
     const data = await new Promise((resolve, reject) => {
-      https.get(apiUrl, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' } }, res => {
+      https.get(apiUrl, { headers: GH_AUTH_HEADERS }, res => {
         let body = '';
         res.on('data', c => { body += c; });
         res.on('end', () => {
@@ -757,7 +765,7 @@ function ghSearch(q, sort, perPage) {
   return new Promise((resolve, reject) => {
     const url = 'https://api.github.com/search/repositories?q=' + encodeURIComponent(q) +
       '&sort=' + sort + '&order=desc&per_page=' + perPage;
-    https.get(url, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' } }, res => {
+    https.get(url, { headers: GH_AUTH_HEADERS }, res => {
       let body = '';
       res.on('data', c => { body += c; });
       res.on('end', () => {
@@ -814,7 +822,7 @@ async function getDiscover() {
   try {
     const data = await new Promise((resolve, reject) => {
       https.get('https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest', {
-        headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' },
+        headers: GH_AUTH_HEADERS,
       }, res => {
         let body = '';
         res.on('data', c => { body += c; });
@@ -833,7 +841,7 @@ async function getDiscover() {
       const pair = await Promise.all([
         new Promise((resolve, reject) => {
           https.get('https://api.github.com/repos/deepseek-ai/deepseek-harness/tags?per_page=1', {
-            headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' },
+            headers: GH_AUTH_HEADERS,
           }, res => {
             let body = '';
             res.on('data', c => { body += c; });
@@ -845,7 +853,7 @@ async function getDiscover() {
         }),
         new Promise((resolve, reject) => {
           https.get('https://api.github.com/repos/deepseek-ai/deepseek-harness', {
-            headers: { 'User-Agent': 'dsh-launcher/' + VERSION, 'Accept': 'application/vnd.github+json' },
+            headers: GH_AUTH_HEADERS,
           }, res => {
             let body = '';
             res.on('data', c => { body += c; });
@@ -926,6 +934,181 @@ function runPluginInstall(pkg) {
     }
     job.running = false;
   })();
+}
+
+// ================================================================ 插件评测(豆瓣风格)
+const PLUGIN_REVIEWS = {
+  'nexu-io/open-design': {
+    score: 9.2,
+    tagline: '让编程智能体直接替你出设计的明星插件,设计圈当前的现象级项目。',
+    intro: '面向 DeepSeek Harness 的开源设计插件,本地优先的桌面应用,把「AI 编码代理」变成设计师:用自然语言生成、迭代 UI 与视觉稿,并直接产出可落地的设计资产。社区热度极高,88k Star 与 10k Fork 是其影响力的直接注脚。',
+    pros: ['设计生成质量高,输出可直接进开发流程', '本地优先,数据不出本机', '插件体系开放,与 Harness 组合顺畅', '社区活跃,更新与生态跟进快'],
+    cons: ['体积与资源占用不低', '开源版本与商业服务存在功能分层', '对设计审美与提示词功底有一定要求'],
+    audience: '想用 AI 提升 UI/视觉产能的产品、设计师与全栈开发者;需要高频出设计稿的团队。',
+    comments: ['设计界少有的“真能用”的 AI 工具,出稿速度翻倍。', '本地化做得比想象中扎实,值得一试。'],
+    dims: { hot: 9.5, active: 9.5, docs: 8.5, easy: 8.0 },
+  },
+  'titanwings/colleague-skill': {
+    score: 8.4,
+    tagline: '把 AI 变成一位有温度的数字同事,主打陪伴与人格化体验。',
+    intro: '「数字生命 1.0」:将离别、陪伴等情感场景做成可安装的 Agent Skill,让你的 Harness 多一位“同事”。23k Star 说明它戳中了很多人的情感需求,Python 实现、MIT 协议,社区二创活跃。',
+    pros: ['情感化定位独特,可玩性强', 'MIT 协议,自由度高', '社区二创与衍生内容多', '安装简单,即装即用'],
+    cons: ['偏陪伴/娱乐向,生产力场景覆盖有限', '人格化内容高度依赖模型表现', '个别衍生内容质量参差'],
+    audience: '想给 Harness 加点人情味的玩家、内容创作者,以及研究 AI 人格化的开发者。',
+    comments: ['第一次觉得 AI 也能“送别”,挺戳人。', '玩法新颖,可惜正经干活用不上太多。'],
+    dims: { hot: 9.0, active: 8.5, docs: 7.5, easy: 9.0 },
+  },
+  'tt-a1i/archify': {
+    score: 9.0,
+    tagline: '一键生成架构图、时序图、数据流图,漂亮且可校验,写文档利器。',
+    intro: '面向 Agent 的图表生成 Skill:把架构、工作流、时序、数据流、生命周期图变成自包含的交互式 HTML,支持深色/浅色主题与导出。13.7k Star、MIT 协议,文档与示例丰富,是技术写作与方案评审的高频工具。',
+    pros: ['图表美观且可交互,非静态截图', '自包含 HTML,分享零依赖', '示例与文档质量高', '与 Harness 工作流结合自然'],
+    cons: ['生成结果仍需人工校对', '复杂场景下输出速度一般'],
+    audience: '需要频繁画架构图/时序图的后端、架构师与技术文档作者。',
+    comments: ['评审会上直接展示,比 PPT 画图体面多了。', '文档质量在同类里数一数二。'],
+    dims: { hot: 8.8, active: 9.0, docs: 9.0, easy: 8.5 },
+  },
+  'Nagi-ovo/voyager': {
+    score: 8.6,
+    tagline: '浏览器增强套件,把 Gemini、AI Studio、ChatGPT 和 Harness 都装进统一体验。',
+    intro: '面向多个 AI Web UI 的增强套件:提示词管理、聊天管理、工作流增强,顺带覆盖 DeepSeek Harness。19.5k Star 的成熟项目,功能全面,更新稳定。',
+    pros: ['一套工具覆盖多个 AI 平台', '提示词与会话管理实用', '长期维护,社区反馈响应快', '对 Harness 亦有适配'],
+    cons: ['GPL-3.0 协议,商用需注意传染性条款', '功能面广,单点深度有限', '浏览器插件形态有平台限制'],
+    audience: '同时使用多个 AI 产品的重度用户;能接受 GPL 协议的个人与团队。',
+    comments: ['多平台党福音,一个插件管全部。', '协议是硬伤,公司内用要谨慎。'],
+    dims: { hot: 8.9, active: 9.0, docs: 8.0, easy: 8.0 },
+  },
+  'walkinglabs/learn-harness-engineering': {
+    score: 8.8,
+    tagline: '从 0 到 1 的 Harness 工程教程,新手入坑首选。',
+    intro: '系统化的 Harness 工程入门教程:从环境搭建、插件机制到进阶实践,11.7k Star、MIT 协议,内容持续更新。不是插件,却是生态里最值得先读的“说明书”。',
+    pros: ['体系完整,适合零基础', '持续更新,跟得上官方节奏', 'MIT 协议,可自由改编', '社区反馈与答疑活跃'],
+    cons: ['纯教程,不提供即装即用的功能', '部分章节依赖读者动手能力'],
+    audience: '所有刚开始接触 DeepSeek Harness 的开发者与爱好者。',
+    comments: ['读完少走一星期弯路。', '希望官方文档也能学学这个组织方式。'],
+    dims: { hot: 8.5, active: 8.0, docs: 9.5, easy: 9.0 },
+  },
+  'Ruler4396/dsh-launcher-lifetime': {
+    score: 8.0,
+    tagline: '控制 dsh 服务常驻/托盘/随窗口三种生命周期的官方风格小插件。',
+    intro: '配合 Windows 启动器 shell 使用:决定关闭窗口或退出托盘时 node 服务继续运行还是退出。零运行时依赖,只写一个 JSON 配置,三种驻留模式即切即用,是“小而美”的典型。',
+    pros: ['零依赖,只写配置不改代码', '三种驻留模式贴合真实场景', '安全设计严谨(不误杀外部服务)', '与启动器生态配合成熟'],
+    cons: ['Star 数少,认知度低', '功能单一,仅服务生命周期', '依赖配套 shell,单独使用意义有限'],
+    audience: '使用桌面启动器、在意内存占用与开机体验的 Windows 用户。',
+    comments: ['省内存神器,关窗即停、秒开体验很好。', '名字冷门,但细节做得讲究。'],
+    dims: { hot: 5.5, active: 8.0, docs: 8.5, easy: 9.0 },
+  },
+  'ZSeven-W/openpencil': {
+    score: 8.3,
+    tagline: '首个开源 AI 原生矢量设计工具,Design-as-Code 的多智能体协作玩法。',
+    intro: 'Rust 实现的 AI 原生矢量设计工具,支持“Agent 团队”并发协作,把设计变成代码驱动。5.2k Star、MIT 协议,技术路线独特,对 Harness 生态是很好的设计类补充。',
+    pros: ['技术路线独特(Design-as-Code)', 'MIT 协议 + Rust 性能底子好', '多智能体协作有前瞻性', '与编程工作流结合紧密'],
+    cons: ['成熟度低于老牌设计工具', '上手门槛高于纯 Web 插件', '社区规模尚在成长期'],
+    audience: '喜欢“代码即设计”理念的前端/全栈开发者与早期尝鲜者。',
+    comments: ['设计文件能进 git,这点真香。', '还在成长期,但方向有意思。'],
+    dims: { hot: 7.8, active: 9.0, docs: 7.5, easy: 7.0 },
+  },
+  'bruc3van/dsh-desktop': {
+    score: 7.9,
+    tagline: '官方 Web UI 原封不动、长任务常驻托盘、插件先审后装的独立桌面客户端。',
+    intro: '独立 dsh 桌面客户端:不魔改官方 Web UI,把 Agent 长任务放进托盘常驻,并对精选插件执行“先审查、再安装”。定位清晰、更新活跃,是喜欢原生体验用户的新选择。',
+    pros: ['官方 UI 原样,体验不走样', '托盘常驻适合长任务', '插件先审后装,安全取向明确', 'MIT 协议,更新频繁'],
+    cons: ['项目较新,用户基数小', '依赖 Electron,资源占用偏高', '功能广度与成熟度仍需时间'],
+    audience: '想要原生桌面体验、又担心插件安全的 Harness 用户。',
+    comments: ['托盘挂长任务是真的刚需。', '新项目,但思路和执行力都在线。'],
+    dims: { hot: 6.0, active: 9.0, docs: 7.0, easy: 8.5 },
+  },
+  'HeWhenJay/dsh-provider-hub': {
+    score: 7.0,
+    tagline: 'DSH 原生模型供应商中心:官方 OAuth、渠道管理、故障转移与日志。',
+    intro: '为 Harness 提供模型供应商管理:官方账号 OAuth 接入、多 API 渠道、模型发现与故障转移。定位专业但刚起步,适合关注多供应商切换与稳定性的进阶用户。',
+    pros: ['直击多供应商管理痛点', '故障转移设计实用', '方向与官方生态贴合'],
+    cons: ['项目极新,Star 与反馈少', '文档与稳定性待验证', '许可证未明确标注(NOASSERTION)'],
+    audience: '需要同时管理多个模型供应商、在意可用性的进阶用户。',
+    comments: ['功能方向很对,就看后续维护了。', 'OAuth 接入省去不少手动配置。'],
+    dims: { hot: 5.0, active: 8.5, docs: 6.0, easy: 7.5 },
+  },
+  'AgentConnect/dsh-awiki': {
+    score: 6.8,
+    tagline: 'AWiki 身份与消息插件,让 Harness 接入 AWiki 协作生态。',
+    intro: 'AWiki 身份认证与消息收发插件,把 Harness 接入 AWiki 生态。功能聚焦、实现轻量,但用户群很小,适合已经在用 AWiki 的团队。',
+    pros: ['轻量、功能聚焦', '与 AWiki 生态直接打通', 'MIT 协议'],
+    cons: ['受众面窄', '项目早期,文档简略', '更新与社区反馈有限'],
+    audience: '已在用 AWiki、希望让 Harness 参与其中的团队。',
+    comments: ['AWiki 用户刚需,别人用不上。', '小而专,该有的都有。'],
+    dims: { hot: 5.0, active: 8.0, docs: 6.0, easy: 7.5 },
+  },
+};
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function autoReview(info) {
+  const stars = info.stars || 0;
+  const hot = clamp(Math.round(Math.log10(stars + 1) * 1.2 * 10) / 10, 1, 10);
+  const days = Math.max(0, (Date.now() - new Date(info.updated + 'T00:00:00Z').getTime()) / 86400000);
+  const active = days <= 7 ? 9.5 : days <= 30 ? 8.5 : days <= 90 ? 7.0 : 5.5;
+  const docs = (info.description || '').length > 40 ? 7.0 : 6.0;
+  const easy = 7.0;
+  const score = clamp(Math.round((hot * 0.35 + active * 0.35 + docs * 0.15 + easy * 0.15) * 10) / 10, 5.0, 9.5);
+  return {
+    score: score,
+    tagline: (info.description || '暂无简介。'),
+    intro: '该插件暂无人为撰写的深度评测,以下内容由启动器根据 GitHub 数据自动生成:Star 数、最近更新、开源协议等指标的综合评估,仅供参考。',
+    pros: [
+      stars >= 1000 ? ('GitHub 热度高: ' + stars + ' Star') : '社区规模尚小,仍在成长',
+      days <= 30 ? '近期仍在活跃更新' : '近期更新放缓',
+      info.license ? ('开源协议明确: ' + info.license) : '未标注明确开源协议,商用前请确认',
+    ],
+    cons: [
+      '暂无深度评测与用户口碑数据',
+      stars < 100 ? '使用前建议自行评估代码质量' : '自动评分不代表实际体验',
+    ],
+    audience: '建议先到 GitHub 查看 README 与 Issue,再决定是否安装。',
+    comments: ['自动评测仅供参考,欢迎安装后回来分享体验。'],
+    dims: { hot: hot, active: active, docs: docs, easy: easy },
+    auto: true,
+  };
+}
+
+function findPluginInfo(repo) {
+  const all = pluginCatalog.trending.concat(pluginCatalog.newest, pluginCatalog.uiThemes);
+  for (const item of all) if (item.name === repo) return item;
+  return null;
+}
+async function getPluginDetail(repo) {
+  await refreshPluginCatalog(false);
+  let info = findPluginInfo(repo);
+  if (!info) {
+    try {
+      const extra = await new Promise((resolve, reject) => {
+        https.get('https://api.github.com/repos/' + repo, {
+          headers: GH_AUTH_HEADERS,
+        }, res => {
+          let body = '';
+          res.on('data', c => { body += c; });
+          res.on('end', () => {
+            if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+            try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+          });
+        }).on('error', reject);
+      });
+      info = {
+        name: repo,
+        description: String(extra.description || '').slice(0, 140),
+        stars: extra.stargazers_count || 0,
+        html_url: extra.html_url || 'https://github.com/' + repo,
+        updated: String(extra.pushed_at || '').slice(0, 10),
+      };
+    } catch (e) {}
+  }
+  const review = PLUGIN_REVIEWS[repo] || autoReview(info || { description: '', stars: 0, updated: '' });
+  return {
+    repo: repo,
+    info: info || {
+      name: repo, description: '', stars: 0,
+      html_url: 'https://github.com/' + repo, updated: '',
+    },
+    review: review,
+  };
 }
 
 // ================================================================ 插件预览图
@@ -1143,7 +1326,19 @@ a:hover{text-decoration:underline}
 .plugin-meta{font-size:12px;color:var(--label-tertiary);margin-top:2px}
 .plugin-thumb{width:64px;height:64px;border-radius:8px;object-fit:cover;border:1px solid var(--border-l2);background:var(--bg-layer-2);flex:none;cursor:zoom-in}
 .plugin-thumb.ph{opacity:.35;cursor:default}
-.preview-img{max-width:760px;max-height:72vh;width:auto;border-radius:8px;border:1px solid var(--border-l2);background:#fff}`;
+.preview-img{max-width:760px;max-height:72vh;width:auto;border-radius:8px;border:1px solid var(--border-l2);background:#fff}
+.score-box{flex:none;width:120px;text-align:center;padding:8px 0}
+.score-num{font-size:40px;font-weight:700;line-height:1;color:var(--label-primary)}
+.score-stars{margin-top:8px;font-size:16px;letter-spacing:2px;color:#f5b301;height:20px}
+.score-stars .off{color:var(--border-l2)}
+.score-dims{display:flex;flex-direction:column;gap:8px;padding-top:4px}
+.dim-row{display:flex;align-items:center;gap:8px}
+.dim-label{flex:none;width:64px;font-size:12px;color:var(--label-secondary)}
+.dim-bar{flex:1;height:6px;border-radius:3px;background:var(--bg-layer-2);overflow:hidden}
+.dim-fill{height:100%;border-radius:3px;background:var(--brand)}
+.dim-val{flex:none;width:30px;text-align:right;font-size:12px;color:var(--label-tertiary)}
+.review-list{margin:0;padding-left:18px}
+.review-list li{margin:4px 0;font-size:13px;line-height:20px}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -1160,7 +1355,7 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item" data-view="log"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.2 2L4.5 10M8.5 10.5h3"/></svg></span>日志</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
       <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
-      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件市场</button>
+      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
       <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
     </nav>
     <div class="sidebar-foot" id="sidebarFoot">控制面板 v0.1.0</div>
@@ -1299,7 +1494,7 @@ const PAGE_HTML = `<div class="app">
       </div>
     </section>
     <section class="view" id="view-market" hidden>
-      <h2 class="title">插件市场</h2>
+      <h2 class="title">插件</h2>
       <div class="card">
         <div class="row spread" style="margin-bottom:6px">
           <span class="muted" style="font-size:12px">来自 GitHub topic:dsh-plugin 的社区插件,点击「安装」后重启 dsh 生效</span>
@@ -1310,6 +1505,57 @@ const PAGE_HTML = `<div class="app">
           <div class="card-title" id="pluginJobTitle">插件安装</div>
           <div class="log-box" id="pluginJobLog" style="height:150px"></div>
         </div>
+      </div>
+    </section>
+    <section class="view" id="view-plugin" hidden>
+      <h2 class="title" style="display:flex;align-items:center;gap:10px">
+        <button class="btn outline sm" id="btnBackPlugin">← 返回插件列表</button>
+      </h2>
+      <div class="card" id="pluginDetailCard">
+        <div class="row" style="align-items:flex-start">
+          <img class="plugin-thumb" id="pdThumb" src="" alt="" style="width:72px;height:72px">
+          <div style="flex:1;min-width:0">
+            <div class="row spread">
+              <div class="plugin-name" id="pdName" style="font-size:16px">—</div>
+              <div class="row">
+                <button class="btn outline sm" id="pdInstall">安装</button>
+                <a class="btn outline sm" id="pdLink" href="#" target="_blank" style="text-decoration:none">GitHub</a>
+              </div>
+            </div>
+            <div class="plugin-meta" id="pdMeta"></div>
+            <div class="plugin-desc" id="pdDesc" style="margin-top:6px"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="align-items:flex-start;gap:24px">
+          <div class="score-box">
+            <div class="score-num" id="pdScore">—</div>
+            <div class="score-stars" id="pdStars"></div>
+            <div class="muted" style="font-size:11px" id="pdScoreHint">综合评分</div>
+          </div>
+          <div class="score-dims" id="pdDims" style="flex:1;min-width:0"></div>
+        </div>
+        <div style="margin-top:14px">
+          <div id="pdTagline" style="font-weight:600"></div>
+          <div id="pdIntro" class="muted" style="margin-top:6px;font-size:13px"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="color:var(--success)">优点</div>
+        <ul class="review-list" id="pdPros"></ul>
+      </div>
+      <div class="card">
+        <div class="card-title" style="color:var(--error)">缺点</div>
+        <ul class="review-list" id="pdCons"></ul>
+      </div>
+      <div class="card">
+        <div class="card-title">适合人群</div>
+        <div id="pdAudience" style="font-size:13px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">简评</div>
+        <ul class="review-list" id="pdComments"></ul>
       </div>
     </section>
     <section class="view" id="view-ui" hidden>
@@ -1580,16 +1826,15 @@ const PAGE_JS = `(function () {
   });
   // ---- 发现 / 插件市场 / 界面 ----
   function pluginRowHtml(item, withInstall) {
-    var installBtn = withInstall
-      ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>'
-      : '';
+    var btns = '<button class="btn outline sm" data-review="' + item.name + '">评测</button>' +
+      (withInstall ? '<button class="btn outline sm" data-pkg="' + item.name + '">安装</button>' : '');
     return '<div class="plugin-row">' +
       '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(item.name) + '" alt="">' +
       '<div class="plugin-info">' +
       '<div class="plugin-name"><a href="' + item.html_url + '" target="_blank">' + item.name + '</a></div>' +
       '<div class="plugin-desc">' + (item.description || '') + '</div>' +
       '<div class="plugin-meta">★ ' + item.stars + ' · 更新于 ' + item.updated + '</div>' +
-      '</div>' + installBtn + '</div>';
+      '</div>' + btns + '</div>';
   }
   function renderDiscover(d) {
     $('#trendingList').innerHTML = d.trending.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
@@ -1613,6 +1858,11 @@ const PAGE_JS = `(function () {
           m.querySelector('img').src = img.src;
           m.hidden = false;
         }
+      });
+    });
+    document.querySelectorAll('.plugin-row [data-review]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        openPluginDetail(b.dataset.review);
       });
     });
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
@@ -1664,6 +1914,107 @@ const PAGE_JS = `(function () {
   $('#btnRefreshMarket').addEventListener('click', function () {
     toast('刷新目录…');
     loadDiscover(true).then(function () { toast('目录已刷新'); });
+  });
+  // ---- 插件评测详情页 ----
+  function openPluginDetail(repo) {
+    switchView('plugin');
+    $('#pluginDetailCard').innerHTML = '<span class="muted">加载评测中…</span>';
+    api('/api/plugin-detail?repo=' + encodeURIComponent(repo)).then(renderPluginDetail).catch(function (e) {
+      $('#pluginDetailCard').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  function starsHtml(score) {
+    var full = Math.round(score);
+    var s = '';
+    for (var i = 1; i <= 5; i++) s += '<span class="' + (i <= full ? '' : 'off') + '">★</span>';
+    return s;
+  }
+  function dimHtml(label, val) {
+    return '<div class="dim-row"><span class="dim-label">' + label + '</span>' +
+      '<div class="dim-bar"><div class="dim-fill" style="width:' + Math.round(val * 10) + '%"></div></div>' +
+      '<span class="dim-val">' + val + '</span></div>';
+  }
+  function renderPluginDetail(d) {
+    var info = d.info || {};
+    var rv = d.review || {};
+    var thumb = document.createElement('div');
+    var card = $('#pluginDetailCard');
+    card.innerHTML =
+      '<div class="row" style="align-items:flex-start">' +
+      '<img class="plugin-thumb" src="/api/plugin-preview-img?repo=' + encodeURIComponent(d.repo) + '" alt="" style="width:72px;height:72px">' +
+      '<div style="flex:1;min-width:0">' +
+      '<div class="row spread">' +
+      '<div class="plugin-name" style="font-size:16px">' + d.repo + '</div>' +
+      '<div class="row">' +
+      '<button class="btn outline sm" id="pdInstall" data-pkg="' + d.repo + '">安装</button>' +
+      '<a class="btn outline sm" href="' + (info.html_url || 'https://github.com/' + d.repo) + '" target="_blank" style="text-decoration:none">GitHub</a>' +
+      '</div>' +
+      '</div>' +
+      '<div class="plugin-meta">★ ' + (info.stars || 0) + ' · 更新于 ' + (info.updated || '—') + (rv.auto ? ' · 自动评测' : ' · 编辑评测') + '</div>' +
+      '<div class="plugin-desc" style="margin-top:6px">' + (info.description || '') + '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card" style="margin:14px 0 0;box-shadow:none;border:1px solid var(--border-l2)">' +
+      '<div class="row" style="align-items:flex-start;gap:24px">' +
+      '<div class="score-box">' +
+      '<div class="score-num">' + rv.score + '</div>' +
+      '<div class="score-stars">' + starsHtml(rv.score) + '</div>' +
+      '<div class="muted" style="font-size:11px">综合评分 / 10</div>' +
+      '</div>' +
+      '<div class="score-dims" style="flex:1;min-width:0">' +
+      dimHtml('热度', rv.dims ? rv.dims.hot : 0) +
+      dimHtml('活跃度', rv.dims ? rv.dims.active : 0) +
+      dimHtml('文档质量', rv.dims ? rv.dims.docs : 0) +
+      dimHtml('易用性', rv.dims ? rv.dims.easy : 0) +
+      '</div>' +
+      '</div>' +
+      '<div style="margin-top:14px">' +
+      '<div style="font-weight:600">' + (rv.tagline || '') + '</div>' +
+      '<div class="muted" style="margin-top:6px;font-size:13px">' + (rv.intro || '') + '</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title" style="color:var(--success)">优点</div>' +
+      '<ul class="review-list">' + (rv.pros || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title" style="color:var(--error)">缺点</div>' +
+      '<ul class="review-list">' + (rv.cons || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">适合人群</div>' +
+      '<div style="font-size:13px">' + (rv.audience || '') + '</div>' +
+      '</div>' +
+      '<div class="card">' +
+      '<div class="card-title">简评</div>' +
+      '<ul class="review-list">' + (rv.comments || []).map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' +
+      '</div>';
+    var ib = document.querySelector('#pdInstall');
+    if (ib) {
+      ib.addEventListener('click', function () {
+        var pkg = ib.dataset.pkg;
+        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\\n\\n确定安装?')) return;
+        ib.disabled = true;
+        ib.textContent = '安装中…';
+        api('/api/market/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pkg: pkg }),
+        }).then(function () {
+          toast('开始安装 ' + pkg);
+          $('#pluginJobCard').hidden = false;
+          $('#pluginJobTitle').textContent = '安装中: ' + pkg;
+          pollPluginJob();
+        }).catch(function (e) {
+          toast(e.message);
+          ib.disabled = false;
+          ib.textContent = '安装';
+        });
+      });
+    }
+  }
+  $('#btnBackPlugin').addEventListener('click', function () {
+    switchView('market');
   });
   $('#btnRefreshLog').addEventListener('click', loadLog);
   $('#btnClearLog').addEventListener('click', function () {
@@ -1806,6 +2157,11 @@ const server = http.createServer(async (req, res) => {
       const repo = String(u.searchParams.get('repo') || '');
       if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });
       return sendJSON(res, 200, { image: await getPluginPreview(repo) });
+    }
+    if (p === '/api/plugin-detail' && m === 'GET') {
+      const repo = String(u.searchParams.get('repo') || '');
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });
+      return sendJSON(res, 200, await getPluginDetail(repo));
     }
     if (p === '/api/plugin-preview-img' && m === 'GET') {
       const repo = String(u.searchParams.get('repo') || '');
