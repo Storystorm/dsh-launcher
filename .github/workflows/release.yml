@@ -69,13 +69,13 @@ jobs:
         with:
           path: release-assets
       - run: find release-assets -type f -exec mv {} ./ \;
+      - run: ls -la
       - name: Create release
         run: |
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --notes "Windows 版改为单文件 .exe(双击即可,自带运行环境)。三平台由 GitHub Actions 原生构建。" \
+            --notes "Windows 单文件 exe(双击即用) + Linux 版由 GitHub Actions 构建;macOS 安装包随后补充。" \
             DeepSeek-Harness-Launcher-Windows-x64.exe \
-            DeepSeek-Harness-Launcher-macOS-x64.dmg \
             DeepSeek-Harness-Launcher-Linux-x64.tar.gz
         env:
           GH_TOKEN: ${{ github.token }}
