@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'chat', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -59,6 +59,17 @@
       $('#port').value = info.config.port;
       $('#host').value = info.config.host;
       $('#autoOpen').checked = !!info.config.autoOpen;
+      var chatUrl = 'http://' + (info.config.host === '0.0.0.0' ? '127.0.0.1' : info.config.host) + ':' + info.config.port + '/';
+      var frame = $('#chatFrame');
+      if (frame && !frame.dataset.loaded) {
+        frame.dataset.loaded = '1';
+        frame.src = chatUrl;
+        frame.addEventListener('load', function () {
+          $('#chatHint').textContent = '已加载官方 DSH 界面';
+        });
+      }
+      var link = $('#chatOpenLink');
+      if (link) link.href = chatUrl;
       if (info.config.update) {
         $('#updateOwner').value = info.config.update.owner || '';
         $('#updateRepo').value = info.config.update.repo || '';
@@ -1106,6 +1117,10 @@
       });
     }).catch(function () {});
   }
+  $('#btnChatReload').addEventListener('click', function () {
+    var frame = $('#chatFrame');
+    if (frame) frame.src = frame.src;
+  });
   $('#btnCloseLogin').addEventListener('click', function () {
     $('#loginModal').hidden = true;
   });

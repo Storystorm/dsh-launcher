@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1756,6 +1756,7 @@ const PAGE_HTML = `<div class="app">
     <nav class="nav">
       <button class="nav-item" data-view="install"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v8M4.8 5.7L8 9l3.2-3.3"/><path d="M2.5 11.5v1.5a1 1 0 001 1h9a1 1 0 001-1v-1.5"/></svg></span>安装</button>
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
+      <button class="nav-item" data-view="chat"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>对话</button>
       <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>监控</button>
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
@@ -1818,6 +1819,16 @@ const PAGE_HTML = `<div class="app">
         <div class="muted" style="font-size:12px">访问地址</div>
         <div style="margin-top:4px;font-size:14px"><a id="statusUrl" href="#" target="_blank">—</a></div>
       </div>
+    </section>
+    <section class="view" id="view-chat" hidden style="max-width:none">
+      <h2 class="title" style="display:flex;align-items:center;gap:10px">对话
+        <span class="muted" style="font-size:12px;font-weight:400">官方 DSH 界面(会话 + 工作区),原样嵌入</span>
+        <span style="flex:1"></span>
+        <button class="btn outline sm" id="btnChatReload">刷新</button>
+        <a class="btn outline sm" id="chatOpenLink" href="#" target="_blank" style="text-decoration:none">新窗口打开</a>
+      </h2>
+      <div class="muted" id="chatHint" style="font-size:12px;margin-bottom:8px">正在加载 DSH 界面…若未启动服务请先到「状态」页启动</div>
+      <iframe id="chatFrame" src="about:blank" style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border-l2);border-radius:12px;background:#fff"></iframe>
     </section>
     <section class="view" id="view-monitor" hidden>
       <h2 class="title">监控 · 遥控台</h2>
@@ -2076,7 +2087,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'chat', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2135,6 +2146,17 @@ const PAGE_JS = `(function () {
       $('#port').value = info.config.port;
       $('#host').value = info.config.host;
       $('#autoOpen').checked = !!info.config.autoOpen;
+      var chatUrl = 'http://' + (info.config.host === '0.0.0.0' ? '127.0.0.1' : info.config.host) + ':' + info.config.port + '/';
+      var frame = $('#chatFrame');
+      if (frame && !frame.dataset.loaded) {
+        frame.dataset.loaded = '1';
+        frame.src = chatUrl;
+        frame.addEventListener('load', function () {
+          $('#chatHint').textContent = '已加载官方 DSH 界面';
+        });
+      }
+      var link = $('#chatOpenLink');
+      if (link) link.href = chatUrl;
       if (info.config.update) {
         $('#updateOwner').value = info.config.update.owner || '';
         $('#updateRepo').value = info.config.update.repo || '';
@@ -3182,6 +3204,10 @@ const PAGE_JS = `(function () {
       });
     }).catch(function () {});
   }
+  $('#btnChatReload').addEventListener('click', function () {
+    var frame = $('#chatFrame');
+    if (frame) frame.src = frame.src;
+  });
   $('#btnCloseLogin').addEventListener('click', function () {
     $('#loginModal').hidden = true;
   });
