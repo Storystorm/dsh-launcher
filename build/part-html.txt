@@ -126,12 +126,34 @@
     <section class="view" id="view-community" hidden>
       <h2 class="title">社区</h2>
       <div class="card">
+        <div class="card-title">发帖</div>
+        <textarea id="postText" rows="3" placeholder="分享你的使用体验、创意或提问…#话题" style="width:100%;max-width:640px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        <div class="row" style="margin-top:8px;justify-content:space-between">
+          <span class="muted" style="font-size:11px" id="postAuthHint"></span>
+          <button class="btn primary sm" id="btnPost">发布</button>
+        </div>
+      </div>
+      <div class="card" style="padding:0">
+        <div class="feed-tabs">
+          <button class="feed-tab active" data-tab="all">广场</button>
+          <button class="feed-tab" data-tab="featured">精选</button>
+          <button class="feed-tab" data-tab="mine">我的</button>
+        </div>
+        <div id="feedList" style="padding:0 18px 8px"><span class="muted">加载中…</span></div>
+      </div>
+      <div class="card">
         <div class="card-title">加入微信群</div>
         <div class="row spread">
           <span class="muted" style="font-size:12px">扫码加入微信群,交流使用问题、反馈建议</span>
           <button class="btn primary" id="btnJoinGroup">加入群聊</button>
         </div>
       </div>
+    </section>
+    <section class="view" id="view-post" hidden>
+      <h2 class="title" style="display:flex;align-items:center;gap:10px">
+        <button class="btn outline sm" id="btnBackPost">← 返回社区</button>
+      </h2>
+      <div id="postDetail"></div>
     </section>
     <section class="view" id="view-discover" hidden>
       <h2 class="title">发现</h2>

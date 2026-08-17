@@ -14,7 +14,7 @@ const os = require('node:os');
 const zlib = require('node:zlib');
 const { URL } = require('node:url');
 
-const VERSION = '0.4.1';
+const VERSION = '0.5.0';
 const NODE_VERSION = '24.19.0';
 const DSH_PACKAGE = '@deepseek-ai/dsh@0.1.0-rc.6';
 
@@ -1323,6 +1323,59 @@ function deleteReview(repo, id) {
   return { ok: true, removed: before - entry.comments.length };
 }
 
+// ================================================================ 社区时间线(GitHub Issues 存储)
+const COMMUNITY_REPO = 'Storystorm/dsh-community';
+
+function ghApi(pathname, opts) {
+  opts = opts || {};
+  const headers = { 'User-Agent': 'dsh-launcher/' + VERSION, Accept: 'application/vnd.github+json' };
+  if (authStore && authStore.token) headers.Authorization = 'Bearer ' + authStore.token;
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      host: 'api.github.com',
+      path: pathname,
+      method: opts.method || 'GET',
+      headers: headers,
+      timeout: 30000,
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        if (res.statusCode >= 400) {
+          let msg = 'HTTP ' + res.statusCode;
+          try { msg = JSON.parse(b).message || msg; } catch (e) {}
+          return reject(new Error(msg));
+        }
+        try { resolve(b ? JSON.parse(b) : {}); } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+    if (opts.body) req.write(JSON.stringify(opts.body));
+    req.end();
+  });
+}
+function fmtPost(issue) {
+  return {
+    number: issue.number,
+    title: issue.title || '',
+    body: issue.body || '',
+    author: (issue.user && issue.user.login) || '',
+    avatar: (issue.user && issue.user.avatar_url) || '',
+    at: issue.created_at || '',
+    comments: issue.comments || 0,
+    likes: issue.reactions ? (issue.reactions['+1'] || 0) : 0,
+    labels: (issue.labels || []).map(l => l.name),
+    url: issue.html_url || '',
+  };
+}
+async function listPosts(query) {
+  const q = 'repo:' + COMMUNITY_REPO + ' type:issue' + (query || '');
+  const j = await ghApi('/search/issues?q=' + encodeURIComponent(q) + '&sort=created&order=desc&per_page=40');
+  return (j.items || []).filter(i => !i.pull_request).map(fmtPost);
+}
+
 // ================================================================ 插件预览图
 const pluginPreviewCache = {};
 const ogFallback = (repo) => 'https://opengraph.githubassets.com/1/' + repo;
@@ -1565,7 +1618,22 @@ a:hover{text-decoration:underline}
 .auth-row{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border-l2);border-radius:8px;margin-bottom:10px;text-align:left;width:100%;background:var(--bg-layer-1);cursor:pointer;font:inherit;color:inherit}
 .auth-row:hover{background:var(--bg-hover)}
 .hub-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border-l2);border-radius:16px;font-size:12px;color:var(--label-primary);text-decoration:none;background:var(--bg-layer-1)}
-.hub-chip:hover{background:var(--bg-hover)}`;
+.hub-chip:hover{background:var(--bg-hover)}
+.feed-tabs{display:flex;gap:4px;padding:10px 16px 0;border-bottom:1px solid var(--border-l1)}
+.feed-tab{padding:6px 12px;font-size:13px;color:var(--label-secondary);background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;font-family:inherit}
+.feed-tab.active{color:var(--label-primary);font-weight:600;border-bottom-color:var(--brand-strong)}
+.feed-item{padding:12px 2px;border-bottom:1px solid var(--border-l1);cursor:pointer}
+.feed-item:last-child{border-bottom:none}
+.feed-avatar{width:34px;height:34px;border-radius:50%;background:var(--brand-soft);color:var(--brand-strong);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;flex:none;overflow:hidden}
+.feed-avatar img{width:100%;height:100%;object-fit:cover}
+.feed-head{display:flex;align-items:center;gap:8px}
+.feed-name{font-size:13px;font-weight:600}
+.feed-time{font-size:11px;color:var(--label-tertiary)}
+.feed-body{font-size:13px;line-height:20px;margin-top:6px;white-space:pre-wrap;word-break:break-word}
+.feed-tag{color:var(--brand-strong)}
+.feed-actions{display:flex;gap:16px;margin-top:8px;font-size:12px;color:var(--label-tertiary)}
+.feed-act{display:inline-flex;align-items:center;gap:4px;background:none;border:none;padding:0;cursor:pointer;font-size:12px;color:var(--label-tertiary);font-family:inherit}
+.feed-act:hover{color:var(--brand-strong)}`;
 const PAGE_HTML = `<div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -1694,12 +1762,34 @@ const PAGE_HTML = `<div class="app">
     <section class="view" id="view-community" hidden>
       <h2 class="title">社区</h2>
       <div class="card">
+        <div class="card-title">发帖</div>
+        <textarea id="postText" rows="3" placeholder="分享你的使用体验、创意或提问…#话题" style="width:100%;max-width:640px;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>
+        <div class="row" style="margin-top:8px;justify-content:space-between">
+          <span class="muted" style="font-size:11px" id="postAuthHint"></span>
+          <button class="btn primary sm" id="btnPost">发布</button>
+        </div>
+      </div>
+      <div class="card" style="padding:0">
+        <div class="feed-tabs">
+          <button class="feed-tab active" data-tab="all">广场</button>
+          <button class="feed-tab" data-tab="featured">精选</button>
+          <button class="feed-tab" data-tab="mine">我的</button>
+        </div>
+        <div id="feedList" style="padding:0 18px 8px"><span class="muted">加载中…</span></div>
+      </div>
+      <div class="card">
         <div class="card-title">加入微信群</div>
         <div class="row spread">
           <span class="muted" style="font-size:12px">扫码加入微信群,交流使用问题、反馈建议</span>
           <button class="btn primary" id="btnJoinGroup">加入群聊</button>
         </div>
       </div>
+    </section>
+    <section class="view" id="view-post" hidden>
+      <h2 class="title" style="display:flex;align-items:center;gap:10px">
+        <button class="btn outline sm" id="btnBackPost">← 返回社区</button>
+      </h2>
+      <div id="postDetail"></div>
     </section>
     <section class="view" id="view-discover" hidden>
       <h2 class="title">发现</h2>
@@ -1832,7 +1922,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2056,6 +2146,163 @@ const PAGE_JS = `(function () {
       $('#updateResult').textContent = '检查失败: ' + e.message;
       toast('检查失败: ' + e.message);
     });
+  });
+  // ---- 社区时间线 ----
+  var feedTab = 'all';
+  function escHtml(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function tagHtml(s) {
+    return escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+  }
+  function fmtRelative(iso) {
+    if (!iso) return '';
+    var t = new Date(iso).getTime();
+    var d = Date.now() - t;
+    var m = Math.floor(d / 60000);
+    if (m < 1) return '刚刚';
+    if (m < 60) return m + ' 分钟前';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + ' 小时前';
+    var day = Math.floor(h / 24);
+    if (day < 30) return day + ' 天前';
+    return String(iso).slice(0, 10);
+  }
+  function avatarHtml(p) {
+    return p.avatar
+      ? '<div class="feed-avatar"><img src="' + p.avatar + '" alt=""></div>'
+      : '<div class="feed-avatar">' + escHtml((p.author || '?').slice(0, 1).toUpperCase()) + '</div>';
+  }
+  function feedItemHtml(p) {
+    return '<div class="feed-item" data-post="' + p.number + '">' +
+      '<div class="feed-head">' + avatarHtml(p) +
+      '<div><div class="feed-name">' + escHtml(p.author) + '</div>' +
+      '<div class="feed-time">' + fmtRelative(p.at) + '</div></div>' +
+      '</div>' +
+      '<div class="feed-body">' + tagHtml(p.body) + '</div>' +
+      '<div class="feed-actions">' +
+      '<button class="feed-act" data-like="' + p.number + '">👍 ' + p.likes + '</button>' +
+      '<span class="feed-act">💬 ' + p.comments + '</span>' +
+      '</div></div>';
+  }
+  function loadFeed(tab) {
+    feedTab = tab || 'all';
+    return api('/api/posts?tab=' + feedTab).then(function (r) {
+      var list = r.posts || [];
+      $('#feedList').innerHTML = list.length
+        ? list.map(feedItemHtml).join('')
+        : '<div class="muted" style="padding:16px 0;text-align:center">还没有帖子,来发第一帖吧</div>';
+      document.querySelectorAll('#feedList [data-post]').forEach(function (el) {
+        el.addEventListener('click', function () { openPost(Number(el.dataset.post)); });
+      });
+      document.querySelectorAll('#feedList [data-like]').forEach(function (b) {
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+          api('/api/posts/' + b.dataset.like + '/like', { method: 'POST' }).then(function () {
+            toast('已点赞');
+            loadFeed(feedTab);
+          }).catch(function (err) { toast(err.message); });
+        });
+      });
+    }).catch(function (e) {
+      $('#feedList').innerHTML = '<div class="muted" style="padding:16px 0">加载失败: ' + e.message + '</div>';
+    });
+  }
+  document.querySelectorAll('.feed-tab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.feed-tab').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      loadFeed(b.dataset.tab);
+    });
+  });
+  function renderPostAuth() {
+    var el = document.querySelector('#postAuthHint');
+    if (!el) return;
+    el.innerHTML = authUser
+      ? ('以 <b>' + authUser.name + '</b> 身份发帖')
+      : '<button class="btn outline sm" id="postLoginBtn">登录后发帖</button>';
+    var lb = document.querySelector('#postLoginBtn');
+    if (lb) lb.addEventListener('click', openLoginModal);
+  }
+  function openPost(n) {
+    switchView('post');
+    $('#postDetail').innerHTML = '<span class="muted">加载中…</span>';
+    api('/api/posts/' + n).then(renderPostDetail).catch(function (e) {
+      $('#postDetail').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  function renderPostDetail(d) {
+    var p = d.post;
+    var h = '';
+    h += '<div class="card">' +
+      '<div class="feed-head">' + avatarHtml(p) +
+      '<div><div class="feed-name">' + escHtml(p.author) + '</div>' +
+      '<div class="feed-time">' + fmtRelative(p.at) + ' · <a href="' + p.url + '" target="_blank">GitHub 原帖</a></div></div>' +
+      '</div>' +
+      '<div class="feed-body" style="margin-top:10px">' + tagHtml(p.body) + '</div>' +
+      '<div class="feed-actions">' +
+      '<button class="feed-act" id="pdLike">👍 ' + p.likes + '</button>' +
+      '<span class="feed-act">💬 ' + (d.comments || []).length + '</span>' +
+      '</div>' +
+      '</div>';
+    h += '<div class="card">' +
+      '<div class="card-title">评论</div>' +
+      (d.comments || []).map(function (c) {
+        return '<div class="feed-item" style="cursor:default">' +
+          '<div class="feed-head">' + avatarHtml(c) +
+          '<div><div class="feed-name">' + escHtml(c.author) + '</div>' +
+          '<div class="feed-time">' + fmtRelative(c.at) + '</div></div>' +
+          '</div>' +
+          '<div class="feed-body">' + tagHtml(c.body) + '</div>' +
+          '</div>';
+      }).join('') +
+      '<div style="margin-top:10px">' +
+      '<textarea id="cmtText" rows="2" placeholder="写下你的评论…" style="width:100%;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>' +
+      '<div class="row" style="margin-top:8px;justify-content:flex-end">' +
+      '<button class="btn primary sm" id="btnCmt">回复</button>' +
+      '</div></div></div>';
+    $('#postDetail').innerHTML = h;
+    var lk = document.querySelector('#pdLike');
+    if (lk) lk.addEventListener('click', function () {
+      if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+      api('/api/posts/' + p.number + '/like', { method: 'POST' }).then(function () {
+        toast('已点赞');
+        openPost(p.number);
+      }).catch(function (err) { toast(err.message); });
+    });
+    var cb = document.querySelector('#btnCmt');
+    if (cb) cb.addEventListener('click', function () {
+      if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+      var text = document.querySelector('#cmtText').value.trim();
+      if (!text) return;
+      api('/api/posts/' + p.number + '/comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text }),
+      }).then(function () {
+        toast('评论已发布');
+        openPost(p.number);
+      }).catch(function (err) { toast(err.message); });
+    });
+  }
+  $('#btnPost').addEventListener('click', function () {
+    if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+    var text = document.querySelector('#postText').value.trim();
+    if (!text) { toast('写点什么再发布'); return; }
+    api('/api/posts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text }),
+    }).then(function () {
+      document.querySelector('#postText').value = '';
+      toast('发布成功');
+      loadFeed(feedTab);
+    }).catch(function (err) { toast('发布失败: ' + err.message); });
+  });
+  $('#btnBackPost').addEventListener('click', function () {
+    switchView('community');
+    loadFeed(feedTab);
   });
   $('#btnJoinGroup').addEventListener('click', function () {
     $('#groupModal').hidden = false;
@@ -2370,6 +2617,7 @@ const PAGE_JS = `(function () {
       authUser = a.loggedIn ? a.user : null;
       renderLoginChip();
       renderCommentAuth();
+      renderPostAuth();
       return a;
     }).catch(function () {});
   }
@@ -2577,6 +2825,8 @@ const PAGE_JS = `(function () {
   loadDiscover();
   loadSkills();
   loadAuth();
+  loadFeed('all');
+  renderPostAuth();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
@@ -2763,6 +3013,74 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, '<html><body style="font-family:sans-serif;text-align:center;padding-top:80px"><h3>登录成功 ✓</h3><p>请回到「黑鲸启动器」面板继续操作</p></body></html>', 'text/html; charset=utf-8');
       } catch (e) {
         return sendJSON(res, 502, { error: String(e && e.message || e) });
+      }
+    }
+    if (p === '/api/posts' && m === 'GET') {
+      const tab = u.searchParams.get('tab') || 'all';
+      try {
+        let q = '';
+        if (tab === 'featured') q = ' label:featured';
+        if (tab === 'mine') {
+          if (!authStore || !authStore.user) return sendJSON(res, 401, { error: '请先登录' });
+          q = ' author:' + authStore.user.login;
+        }
+        return sendJSON(res, 200, { posts: await listPosts(q) });
+      } catch (e) {
+        return sendJSON(res, 502, { error: e.message });
+      }
+    }
+    if (p === '/api/posts' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const text = String(body.text || '').trim().slice(0, 2000);
+      if (!text) return sendJSON(res, 400, { error: '内容不能为空' });
+      if (!authStore || !authStore.user) return sendJSON(res, 401, { error: '请先登录' });
+      try {
+        const issue = await ghApi('/repos/' + COMMUNITY_REPO + '/issues', {
+          method: 'POST',
+          body: { title: text.slice(0, 60), body: text, labels: ['post'] },
+        });
+        return sendJSON(res, 200, { ok: true, post: fmtPost(issue) });
+      } catch (e) {
+        return sendJSON(res, 502, { error: e.message });
+      }
+    }
+    if (p.match(/^\/api\/posts\/\d+$/) && m === 'GET') {
+      const n = Number(p.split('/')[3]);
+      try {
+        const issue = await ghApi('/repos/' + COMMUNITY_REPO + '/issues/' + n);
+        const comments = await ghApi('/repos/' + COMMUNITY_REPO + '/issues/' + n + '/comments?per_page=100');
+        return sendJSON(res, 200, {
+          post: fmtPost(issue),
+          comments: comments.map(c => ({
+            id: c.id, body: c.body || '', author: (c.user && c.user.login) || '',
+            avatar: (c.user && c.user.avatar_url) || '', at: c.created_at || '',
+          })),
+        });
+      } catch (e) {
+        return sendJSON(res, 502, { error: e.message });
+      }
+    }
+    if (p.match(/^\/api\/posts\/\d+\/comments$/) && m === 'POST') {
+      const n = Number(p.split('/')[3]);
+      const body = JSON.parse(await readBody(req) || '{}');
+      const text = String(body.text || '').trim().slice(0, 1000);
+      if (!text) return sendJSON(res, 400, { error: '内容不能为空' });
+      if (!authStore || !authStore.user) return sendJSON(res, 401, { error: '请先登录' });
+      try {
+        await ghApi('/repos/' + COMMUNITY_REPO + '/issues/' + n + '/comments', { method: 'POST', body: { body: text } });
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        return sendJSON(res, 502, { error: e.message });
+      }
+    }
+    if (p.match(/^\/api\/posts\/\d+\/like$/) && m === 'POST') {
+      const n = Number(p.split('/')[3]);
+      if (!authStore || !authStore.user) return sendJSON(res, 401, { error: '请先登录' });
+      try {
+        await ghApi('/repos/' + COMMUNITY_REPO + '/issues/' + n + '/reactions', { method: 'POST', body: { content: '+1' } });
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        return sendJSON(res, 502, { error: e.message });
       }
     }
     if (p === '/api/plugin-detail' && m === 'GET') {

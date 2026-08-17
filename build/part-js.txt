@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin'];
+  var views = ['install', 'status', 'settings', 'log', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -224,6 +224,163 @@
       $('#updateResult').textContent = '检查失败: ' + e.message;
       toast('检查失败: ' + e.message);
     });
+  });
+  // ---- 社区时间线 ----
+  var feedTab = 'all';
+  function escHtml(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function tagHtml(s) {
+    return escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+  }
+  function fmtRelative(iso) {
+    if (!iso) return '';
+    var t = new Date(iso).getTime();
+    var d = Date.now() - t;
+    var m = Math.floor(d / 60000);
+    if (m < 1) return '刚刚';
+    if (m < 60) return m + ' 分钟前';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + ' 小时前';
+    var day = Math.floor(h / 24);
+    if (day < 30) return day + ' 天前';
+    return String(iso).slice(0, 10);
+  }
+  function avatarHtml(p) {
+    return p.avatar
+      ? '<div class="feed-avatar"><img src="' + p.avatar + '" alt=""></div>'
+      : '<div class="feed-avatar">' + escHtml((p.author || '?').slice(0, 1).toUpperCase()) + '</div>';
+  }
+  function feedItemHtml(p) {
+    return '<div class="feed-item" data-post="' + p.number + '">' +
+      '<div class="feed-head">' + avatarHtml(p) +
+      '<div><div class="feed-name">' + escHtml(p.author) + '</div>' +
+      '<div class="feed-time">' + fmtRelative(p.at) + '</div></div>' +
+      '</div>' +
+      '<div class="feed-body">' + tagHtml(p.body) + '</div>' +
+      '<div class="feed-actions">' +
+      '<button class="feed-act" data-like="' + p.number + '">👍 ' + p.likes + '</button>' +
+      '<span class="feed-act">💬 ' + p.comments + '</span>' +
+      '</div></div>';
+  }
+  function loadFeed(tab) {
+    feedTab = tab || 'all';
+    return api('/api/posts?tab=' + feedTab).then(function (r) {
+      var list = r.posts || [];
+      $('#feedList').innerHTML = list.length
+        ? list.map(feedItemHtml).join('')
+        : '<div class="muted" style="padding:16px 0;text-align:center">还没有帖子,来发第一帖吧</div>';
+      document.querySelectorAll('#feedList [data-post]').forEach(function (el) {
+        el.addEventListener('click', function () { openPost(Number(el.dataset.post)); });
+      });
+      document.querySelectorAll('#feedList [data-like]').forEach(function (b) {
+        b.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+          api('/api/posts/' + b.dataset.like + '/like', { method: 'POST' }).then(function () {
+            toast('已点赞');
+            loadFeed(feedTab);
+          }).catch(function (err) { toast(err.message); });
+        });
+      });
+    }).catch(function (e) {
+      $('#feedList').innerHTML = '<div class="muted" style="padding:16px 0">加载失败: ' + e.message + '</div>';
+    });
+  }
+  document.querySelectorAll('.feed-tab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.feed-tab').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      loadFeed(b.dataset.tab);
+    });
+  });
+  function renderPostAuth() {
+    var el = document.querySelector('#postAuthHint');
+    if (!el) return;
+    el.innerHTML = authUser
+      ? ('以 <b>' + authUser.name + '</b> 身份发帖')
+      : '<button class="btn outline sm" id="postLoginBtn">登录后发帖</button>';
+    var lb = document.querySelector('#postLoginBtn');
+    if (lb) lb.addEventListener('click', openLoginModal);
+  }
+  function openPost(n) {
+    switchView('post');
+    $('#postDetail').innerHTML = '<span class="muted">加载中…</span>';
+    api('/api/posts/' + n).then(renderPostDetail).catch(function (e) {
+      $('#postDetail').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  function renderPostDetail(d) {
+    var p = d.post;
+    var h = '';
+    h += '<div class="card">' +
+      '<div class="feed-head">' + avatarHtml(p) +
+      '<div><div class="feed-name">' + escHtml(p.author) + '</div>' +
+      '<div class="feed-time">' + fmtRelative(p.at) + ' · <a href="' + p.url + '" target="_blank">GitHub 原帖</a></div></div>' +
+      '</div>' +
+      '<div class="feed-body" style="margin-top:10px">' + tagHtml(p.body) + '</div>' +
+      '<div class="feed-actions">' +
+      '<button class="feed-act" id="pdLike">👍 ' + p.likes + '</button>' +
+      '<span class="feed-act">💬 ' + (d.comments || []).length + '</span>' +
+      '</div>' +
+      '</div>';
+    h += '<div class="card">' +
+      '<div class="card-title">评论</div>' +
+      (d.comments || []).map(function (c) {
+        return '<div class="feed-item" style="cursor:default">' +
+          '<div class="feed-head">' + avatarHtml(c) +
+          '<div><div class="feed-name">' + escHtml(c.author) + '</div>' +
+          '<div class="feed-time">' + fmtRelative(c.at) + '</div></div>' +
+          '</div>' +
+          '<div class="feed-body">' + tagHtml(c.body) + '</div>' +
+          '</div>';
+      }).join('') +
+      '<div style="margin-top:10px">' +
+      '<textarea id="cmtText" rows="2" placeholder="写下你的评论…" style="width:100%;border:1px solid var(--border-l2);border-radius:8px;padding:8px 10px;font-family:inherit;font-size:13px;resize:vertical;box-sizing:border-box"></textarea>' +
+      '<div class="row" style="margin-top:8px;justify-content:flex-end">' +
+      '<button class="btn primary sm" id="btnCmt">回复</button>' +
+      '</div></div></div>';
+    $('#postDetail').innerHTML = h;
+    var lk = document.querySelector('#pdLike');
+    if (lk) lk.addEventListener('click', function () {
+      if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+      api('/api/posts/' + p.number + '/like', { method: 'POST' }).then(function () {
+        toast('已点赞');
+        openPost(p.number);
+      }).catch(function (err) { toast(err.message); });
+    });
+    var cb = document.querySelector('#btnCmt');
+    if (cb) cb.addEventListener('click', function () {
+      if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+      var text = document.querySelector('#cmtText').value.trim();
+      if (!text) return;
+      api('/api/posts/' + p.number + '/comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text }),
+      }).then(function () {
+        toast('评论已发布');
+        openPost(p.number);
+      }).catch(function (err) { toast(err.message); });
+    });
+  }
+  $('#btnPost').addEventListener('click', function () {
+    if (!authUser) { toast('请先登录'); openLoginModal(); return; }
+    var text = document.querySelector('#postText').value.trim();
+    if (!text) { toast('写点什么再发布'); return; }
+    api('/api/posts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text }),
+    }).then(function () {
+      document.querySelector('#postText').value = '';
+      toast('发布成功');
+      loadFeed(feedTab);
+    }).catch(function (err) { toast('发布失败: ' + err.message); });
+  });
+  $('#btnBackPost').addEventListener('click', function () {
+    switchView('community');
+    loadFeed(feedTab);
   });
   $('#btnJoinGroup').addEventListener('click', function () {
     $('#groupModal').hidden = false;
@@ -538,6 +695,7 @@
       authUser = a.loggedIn ? a.user : null;
       renderLoginChip();
       renderCommentAuth();
+      renderPostAuth();
       return a;
     }).catch(function () {});
   }
@@ -745,6 +903,8 @@
   loadDiscover();
   loadSkills();
   loadAuth();
+  loadFeed('all');
+  renderPostAuth();
   api('/api/install/status').then(function (snap) {
     if (snap.running) {
       renderInstall(snap);
