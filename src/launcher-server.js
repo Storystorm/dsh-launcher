@@ -1588,6 +1588,427 @@ function openKb() {
   return true;
 }
 
+// ================================================================ 本地 AI 工具控制平面(进程 + 端口 + 健康 + MCP)
+// 极简 YAML 子集解析器(零依赖):注释、嵌套 map、列表、引号字符串、行内数组/对象
+const yamlMini = (() => {
+  function splitComment(line) {
+    let q = null;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (q) {
+        if (c === '\\') { i++; continue; }
+        if (c === q) q = null;
+        continue;
+      }
+      if (c === "'" || c === '"') { q = c; continue; }
+      if (c === '#') return line.slice(0, i);
+    }
+    return line;
+  }
+  function parseScalar(s) {
+    s = String(s).trim();
+    if (s === '' || s === '~' || s === 'null' || s === 'Null' || s === 'NULL') return null;
+    if (s === 'true' || s === 'True' || s === 'TRUE') return true;
+    if (s === 'false' || s === 'False' || s === 'FALSE') return false;
+    if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+    if (/^-?\d+\.\d+$/.test(s)) return parseFloat(s);
+    if (s[0] === "'" && s[s.length - 1] === "'") return s.slice(1, -1).replace(/''/g, "'");
+    if (s[0] === '"' && s[s.length - 1] === '"') {
+      return s.slice(1, -1).replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+    if (s[0] === '[' && s[s.length - 1] === ']') {
+      const inner = s.slice(1, -1).trim();
+      if (!inner) return [];
+      return splitTop(inner).map(parseScalar);
+    }
+    if (s[0] === '{' && s[s.length - 1] === '}') {
+      const inner = s.slice(1, -1).trim();
+      const out = {};
+      if (!inner) return out;
+      for (const part of splitTop(inner)) {
+        const kv = splitKey(part);
+        if (kv) out[kv[0]] = parseScalar(kv[1]);
+      }
+      return out;
+    }
+    if (/^!!\w+\b/.test(s)) return s;
+    return s;
+  }
+  function splitTop(s) {
+    const parts = [];
+    let depth = 0, q = null, cur = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) {
+        if (c === '\\') { cur += c + (s[i + 1] || ''); i++; continue; }
+        if (c === q) q = null;
+        cur += c;
+        continue;
+      }
+      if (c === "'" || c === '"') { q = c; cur += c; continue; }
+      if (c === '[' || c === '{') depth++;
+      if (c === ']' || c === '}') depth--;
+      if (c === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+      cur += c;
+    }
+    if (cur.trim()) parts.push(cur.trim());
+    return parts;
+  }
+  function splitKey(s) {
+    let q = null;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (q) {
+        if (c === '\\') { i++; continue; }
+        if (c === q) q = null;
+        continue;
+      }
+      if (c === "'" || c === '"') { q = c; continue; }
+      if (c === ':' && (i === s.length - 1 || s[i + 1] === ' ' || s[i + 1] === '\t')) {
+        return [s.slice(0, i).trim().replace(/^['"]|['"]$/g, ''), s.slice(i + 1).trim()];
+      }
+    }
+    return null;
+  }
+  function parse(text) {
+    const lines = [];
+    for (const raw of String(text).split(/\r?\n/)) {
+      const noComment = splitComment(raw);
+      if (!noComment.trim()) continue;
+      const m = noComment.match(/^(\s*)(.*)$/);
+      lines.push({ indent: m[1].length, content: m[2].trim() });
+    }
+    const root = {};
+    const stack = [{ indent: -1, container: root, key: null }];
+    const cur = () => {
+      const f = stack[stack.length - 1];
+      if (f.key === null) return f.container;
+      if (f.container[f.key] === null || f.container[f.key] === undefined) f.container[f.key] = {};
+      return f.container[f.key];
+    };
+    for (const line of lines) {
+      while (stack.length > 1 && line.indent <= stack[stack.length - 1].indent) stack.pop();
+      const top = stack[stack.length - 1];
+      if (line.content.startsWith('- ')) {
+        const holder = top.key === null ? top.container : (() => {
+          if (top.container[top.key] === null || top.container[top.key] === undefined) top.container[top.key] = [];
+          return top.container[top.key];
+        })();
+        if (!Array.isArray(holder)) throw new Error('列表项出现在非列表位置: ' + line.content);
+        const itemText = line.content.slice(2).trim();
+        const kv = splitKey(itemText);
+        if (itemText === '') {
+          const obj = {};
+          holder.push(obj);
+          stack.push({ indent: line.indent, container: obj, key: null });
+        } else if (kv && kv[1] === '') {
+          const obj = {};
+          holder.push(obj);
+          obj[kv[0]] = null;
+          stack.push({ indent: line.indent, container: obj, key: kv[0] });
+        } else if (kv) {
+          const obj = {};
+          obj[kv[0]] = parseScalar(kv[1]);
+          holder.push(obj);
+          stack.push({ indent: line.indent, container: obj, key: null });
+        } else {
+          holder.push(parseScalar(itemText));
+          stack.push({ indent: line.indent, container: holder, key: null });
+        }
+        continue;
+      }
+      const kv = splitKey(line.content);
+      if (!kv) throw new Error('无法解析行: ' + line.content);
+      const container = cur();
+      if (kv[1] === '') {
+        container[kv[0]] = null;
+        stack.push({ indent: line.indent, container: container, key: kv[0] });
+      } else {
+        container[kv[0]] = parseScalar(kv[1]);
+        stack.push({ indent: line.indent, container: container, key: kv[0] });
+      }
+    }
+    return root;
+  }
+  return { parse: parse };
+})();
+
+const TOOLS_CFG_PATH = () => path.join(DATA_DIR, 'tools.yml');
+const TOOLS_DIR = () => path.join(DATA_DIR, 'tools');
+const TOOLS_TEMPLATE = "# ============================================================\\n# 黑鲸启动器 · 本地 AI 工具注册表(tools.yml)\\n# 每个工具一个条目;修改后点面板「重新加载」立即生效。\\n# @PORT@ 占位符会被替换为实际分配端口;port: 0 表示自动分配空闲端口。\\n# health: HTTP GET 探测(200-399 为健康),或 'mcp:<url>' 用 MCP initialize 探测。\\n# mcp 块:该工具就绪后自动注册到 DSH(写入 profiles/<profile>/cordis.patch.yml)。\\n# cwd 支持 ~ 展开;留空 = 启动器数据目录。\\n# ============================================================\\ndshProfile: web\\ntools:\\n  - id: comfyui\\n    name: ComfyUI\\n    command: python\\n    args: ['main.py', '--port', '@PORT@', '--listen', '127.0.0.1']\\n    cwd: ''\\n    port: 8188\\n    health: 'http://127.0.0.1:@PORT@/system_stats'\\n    env: {}\\n    mcp:\\n      serverName: comfyui\\n      transport: streamable-http\\n      url: 'http://127.0.0.1:@PORT@/mcp'\\n\\n  - id: comfyui-mcp\\n    name: ComfyUI-MCP\\n    command: npx\\n    args: ['-y', 'comfyui-mcp@latest', '--http', '--port', '@PORT@', '--comfyui-url', 'http://127.0.0.1:8188']\\n    cwd: ''\\n    port: 9100\\n    health: 'mcp:http://127.0.0.1:@PORT@/mcp'\\n    env: {}\\n    mcp:\\n      serverName: comfyui-mcp\\n      transport: streamable-http\\n      url: 'http://127.0.0.1:@PORT@/mcp'\\n\\n  - id: ollama\\n    name: Ollama\\n    command: ollama\\n    args: ['serve']\\n    cwd: ''\\n    port: 11434\\n    health: 'http://127.0.0.1:@PORT@/api/tags'\\n    env: {}\\n\\n";
+let toolsCfg = { dshProfile: 'web', tools: [] };
+let toolsState = {};
+function loadToolsCfg() {
+  const p = TOOLS_CFG_PATH();
+  if (!fs.existsSync(p)) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, TOOLS_TEMPLATE);
+  }
+  const parsed = yamlMini.parse(fs.readFileSync(p, 'utf8'));
+  toolsCfg = {
+    dshProfile: String(parsed.dshProfile || 'web'),
+    tools: (parsed.tools || []).map((t, i) => ({
+      id: String(t.id || ('tool-' + i)),
+      name: String(t.name || t.id),
+      command: t.command ? String(t.command) : '',
+      args: (t.args || []).map(String),
+      cwd: t.cwd ? String(t.cwd) : '',
+      port: Number(t.port) || 0,
+      health: t.health ? String(t.health) : '',
+      readyPattern: t.readyPattern ? String(t.readyPattern) : '',
+      env: t.env || {},
+      manage: t.manage === undefined ? true : !!t.manage,
+      mcp: t.mcp ? {
+        serverName: String(t.mcp.serverName || t.id),
+        transport: String(t.mcp.transport || 'streamable-http'),
+        url: t.mcp.url ? String(t.mcp.url) : '',
+        command: t.mcp.command ? String(t.mcp.command) : '',
+        args: (t.mcp.args || []).map(String),
+      } : null,
+    })),
+  };
+  for (const t of toolsCfg.tools) {
+    const old = toolsState[t.id] || {};
+    toolsState[t.id] = Object.assign({ pid: null, status: 'stopped', port: 0, healthOk: null, mcpTools: null, mcpInjected: false, lastError: '', startedAt: 0, logPath: path.join(TOOLS_DIR(), 'logs', t.id + '.log') }, old);
+  }
+  for (const id of Object.keys(toolsState)) {
+    if (!toolsCfg.tools.some(t => t.id === id)) delete toolsState[id];
+  }
+  saveToolsState();
+  return toolsCfg;
+}
+function saveToolsState() {
+  try { saveJSON(path.join(TOOLS_DIR(), 'state.json'), toolsState); } catch (e) {}
+}
+function subst(s, port, tool) {
+  let out = String(s);
+  if (tool) out = out.replace(/@PORT@/g, String(port));
+  out = out.replace(/^~(?=\/|$)/, HOME);
+  return out;
+}
+function portFree(port) {
+  return new Promise(resolve => {
+    const srv = require('net').createServer();
+    srv.once('error', () => resolve(false));
+    srv.once('listening', () => srv.close(() => resolve(true)));
+    srv.listen(port, '127.0.0.1');
+  });
+}
+async function assignPort(tool) {
+  const used = toolsCfg.tools.filter(t => t.id !== tool.id).map(t => toolsState[t.id] && toolsState[t.id].port).filter(Boolean);
+  let p = tool.port || 0;
+  if (!p || used.includes(p) || !(await portFree(p))) {
+    const base = p || 8180;
+    for (let i = 0; i < 80; i++) {
+      const cand = base + i;
+      if (used.includes(cand)) continue;
+      if (await portFree(cand)) { p = cand; break; }
+    }
+    if (!p) throw new Error('找不到可用端口');
+  }
+  return p;
+}
+function killTree(pid) {
+  return new Promise(resolve => {
+    if (!pid) return resolve();
+    try {
+      if (IS_WIN) {
+        spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { timeout: 8000 });
+        return resolve();
+      }
+      try { process.kill(-pid, 'SIGTERM'); } catch (e) {
+        try { process.kill(pid, 'SIGTERM'); } catch (e2) {}
+      }
+      let waited = 0;
+      const iv = setInterval(() => {
+        waited += 300;
+        let alive = true;
+        try { process.kill(pid, 0); } catch (e) { alive = false; }
+        if (!alive || waited >= 6000) {
+          clearInterval(iv);
+          if (alive) {
+            try { process.kill(-pid, 'SIGKILL'); } catch (e) {}
+            try { process.kill(pid, 'SIGKILL'); } catch (e2) {}
+          }
+          setTimeout(resolve, 200);
+        }
+      }, 300);
+    } catch (e) { resolve(); }
+  });
+}
+function mcpInitializeProbe(urlStr, timeoutMs) {
+  return new Promise(resolve => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'dsh-launcher', version: VERSION } } });
+    const u = new URL(urlStr);
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.request({
+      host: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Content-Length': Buffer.byteLength(body) },
+      timeout: timeoutMs || 5000,
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(b);
+          resolve({ ok: !!(j && j.result), sessionId: (res.headers['mcp-session-id'] || ''), raw: j });
+        } catch (e) { resolve({ ok: false, raw: b.slice(0, 200) }); }
+      });
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve({ ok: false }));
+    req.write(body);
+    req.end();
+  });
+}
+async function healthProbe(tool, port) {
+  const h = subst(tool.health || '', port, tool);
+  if (!h) return null;
+  if (h.startsWith('mcp:')) {
+    const r = await mcpInitializeProbe(h.slice(4), 4000);
+    return r.ok;
+  }
+  return httpUp(h, 4000);
+}
+function toolLogTail(id, maxBytes) {
+  const st = toolsState[id];
+  const lp = st && st.logPath;
+  if (!lp || !fs.existsSync(lp)) return '';
+  const size = fs.statSync(lp).size;
+  const start = Math.max(0, size - (maxBytes || 24000));
+  const fd = fs.openSync(lp, 'r');
+  const buf = Buffer.alloc(size - start);
+  fs.readSync(fd, buf, 0, buf.length, start);
+  fs.closeSync(fd);
+  return buf.toString('utf8');
+}
+function logTailMatch(id, pattern, maxBytes) {
+  return toolLogTail(id, maxBytes || 40000).indexOf(pattern) >= 0;
+}
+let toolBootLoops = {};
+async function toolStart(id) {
+  const t = toolsCfg.tools.find(x => x.id === id);
+  if (!t) throw new Error('工具不存在: ' + id);
+  const st = toolsState[id];
+  if (st.status === 'running' || st.status === 'starting') throw new Error('已在运行');
+  if (!t.manage) throw new Error('该工具无需进程管理(stdio 直连 DSH)');
+  if (!t.command) throw new Error('未配置 command');
+  const port = await assignPort(t);
+  const args = t.args.map(a => subst(a, port, t));
+  const cwd = t.cwd ? subst(t.cwd, port, t) : DATA_DIR;
+  if (!fs.existsSync(cwd)) throw new Error('工作目录不存在: ' + cwd);
+  fs.mkdirSync(path.join(TOOLS_DIR(), 'logs'), { recursive: true });
+  fs.mkdirSync(path.join(TOOLS_DIR(), 'pids'), { recursive: true });
+  const logFd = fs.openSync(st.logPath, 'a');
+  let child;
+  try {
+    child = spawn(t.command, args, {
+      cwd: cwd,
+      env: Object.assign({}, process.env, t.env || {}),
+      detached: !IS_WIN,
+      stdio: ['ignore', logFd, logFd],
+      windowsHide: true,
+    });
+  } catch (e) {
+    fs.closeSync(logFd);
+    throw new Error('启动失败: ' + e.message);
+  }
+  fs.closeSync(logFd);
+  child.on('error', () => {});
+  child.on('exit', code => {
+    const cur = toolsState[id];
+    if (cur && cur.status !== 'stopping' && cur.status !== 'stopped') {
+      cur.status = 'error';
+      cur.pid = null;
+      cur.lastError = '进程已退出(code ' + code + '),日志尾部:\n' + toolLogTail(id, 1500).slice(-1500);
+      saveToolsState();
+      syncMcpPatch();
+    }
+  });
+  child.unref();
+  st.pid = child.pid;
+  st.port = port;
+  st.status = 'starting';
+  st.startedAt = Date.now();
+  st.healthOk = null;
+  st.mcpTools = null;
+  st.mcpError = '';
+  st.lastError = '';
+  fs.writeFileSync(path.join(TOOLS_DIR(), 'pids', id + '.pid'), String(child.pid));
+  saveToolsState();
+  toolBootLoops[id] = (async () => {
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline && toolsState[id] && toolsState[id].status === 'starting') {
+      let alive = true;
+      try { process.kill(child.pid, 0); } catch (e) { alive = false; }
+      if (!alive) {
+        toolsState[id].status = 'error';
+        toolsState[id].lastError = '进程启动后立即退出,日志尾部:\n' + toolLogTail(id, 1500).slice(-1500);
+        saveToolsState();
+        break;
+      }
+      const ok = await healthProbe(t, port);
+      if (ok === true || (t.readyPattern && logTailMatch(id, t.readyPattern, 40000))) {
+        toolsState[id].status = 'running';
+        toolsState[id].healthOk = ok === null ? null : true;
+        saveToolsState();
+        syncMcpPatch();
+        break;
+      }
+      await new Promise(r2 => setTimeout(r2, 2000));
+    }
+    if (toolsState[id] && toolsState[id].status === 'starting') {
+      toolsState[id].status = 'running';
+      toolsState[id].healthOk = null;
+      saveToolsState();
+      syncMcpPatch();
+    }
+  })();
+  return { ok: true, port: port, pid: child.pid };
+}
+async function toolStop(id) {
+  const st = toolsState[id];
+  if (!st) throw new Error('工具不存在: ' + id);
+  if (st.status !== 'running' && st.status !== 'starting' && st.status !== 'error') throw new Error('未在运行');
+  st.status = 'stopping';
+  saveToolsState();
+  await killTree(st.pid);
+  st.status = 'stopped';
+  st.pid = null;
+  st.healthOk = null;
+  try { fs.unlinkSync(path.join(TOOLS_DIR(), 'pids', id + '.pid')); } catch (e) {}
+  saveToolsState();
+  syncMcpPatch();
+  return { ok: true };
+}
+async function toolRestart(id) {
+  const st = toolsState[id];
+  if (st && (st.status === 'running' || st.status === 'starting' || st.status === 'error')) await toolStop(id);
+  return toolStart(id);
+}
+function reconcilePids() {
+  for (const t of toolsCfg.tools) {
+    const pidFile = path.join(TOOLS_DIR(), 'pids', t.id + '.pid');
+    if (!fs.existsSync(pidFile)) continue;
+    const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim(), 10);
+    let alive = false;
+    if (pid) { try { process.kill(pid, 0); alive = true; } catch (e) {} }
+    const st = toolsState[t.id];
+    if (alive && (st.status === 'stopped' || !st.status)) {
+      st.status = 'running';
+      st.pid = pid;
+      st.port = t.port || 0;
+      st.startedAt = Date.now();
+    } else if (!alive) {
+      st.status = 'stopped';
+      st.pid = null;
+      try { fs.unlinkSync(pidFile); } catch (e) {}
+    }
+  }
+  saveToolsState();
+}
+
 // ================================================================ 远程遥控(小程序中继)
 let relayClient = { running: false, online: false, pairCode: null, pairToken: null, error: null };
 function relayCfg() { return config.relay || {}; }
@@ -1708,6 +2129,175 @@ async function relayStop(unbind) {
     config.relay = Object.assign({}, relayCfg(), { launcherToken: '', launcherId: '' });
     saveJSON(CONFIG_PATH, config);
     if (authStore.wechat) { delete authStore.wechat; saveAuth(); }
+  }
+}
+
+// ---- MCP 编排:工具清单探测 + 注入 DSH cordis.patch.yml ----
+async function mcpListToolsHttp(urlStr, sessionId) {
+  const init = await mcpInitializeProbe(urlStr, 6000);
+  if (!init.ok) throw new Error('MCP initialize 失败');
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const lib = u.protocol === 'https:' ? https : http;
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Content-Length': Buffer.byteLength(body) };
+    if (sessionId || init.sessionId) headers['Mcp-Session-Id'] = sessionId || init.sessionId;
+    const req = lib.request({
+      host: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, method: 'POST', headers: headers, timeout: 8000,
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(b);
+          if (j && j.result && Array.isArray(j.result.tools)) resolve(j.result.tools);
+          else reject(new Error(j && j.error ? j.error.message : 'tools/list 响应异常'));
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+async function mcpListToolsStdio(command, args, cwd) {
+  const child = spawn(command, args, { cwd: cwd || DATA_DIR, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  let buf = '';
+  const send = (obj) => { try { child.stdin.write(JSON.stringify(obj) + '\n'); } catch (e) {} };
+  const result = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('stdio MCP 探针超时')), 15000);
+    child.stdout.on('data', c => {
+      buf += c;
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let j = null;
+        try { j = JSON.parse(line); } catch (e) { continue; }
+        if (j.id === 1 && j.result) {
+          send({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} });
+          send({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+        }
+        if (j.id === 2) {
+          clearTimeout(timer);
+          if (j.result && Array.isArray(j.result.tools)) resolve(j.result.tools);
+          else reject(new Error(j.error ? (j.error.message || 'tools/list 失败') : 'tools/list 失败'));
+        }
+      }
+    });
+    child.on('error', reject);
+    child.on('exit', () => { clearTimeout(timer); });
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'dsh-launcher', version: VERSION } } });
+  });
+  try { child.kill(); } catch (e) {}
+  return result;
+}
+async function probeMcpForTool(id) {
+  const t = toolsCfg.tools.find(x => x.id === id);
+  if (!t || !t.mcp) return null;
+  const st = toolsState[id];
+  const port = (st && st.port) || t.port || 0;
+  try {
+    let tools;
+    if (t.mcp.transport === 'streamable-http') {
+      tools = await mcpListToolsHttp(subst(t.mcp.url, port, t), '');
+    } else {
+      const cmd = t.mcp.command || t.command;
+      const cargs = (t.mcp.args && t.mcp.args.length ? t.mcp.args : t.args).map(a => subst(a, port, t));
+      tools = await mcpListToolsStdio(cmd, cargs, t.cwd ? subst(t.cwd, port, t) : DATA_DIR);
+    }
+    st.mcpTools = tools.length;
+    st.mcpNames = tools.map(x => x.name);
+    st.mcpError = '';
+  } catch (e) {
+    st.mcpTools = -1;
+    st.mcpError = String(e && e.message || e);
+  }
+  saveToolsState();
+  return st.mcpTools;
+}
+function yq(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }
+function mcpEntryYaml(tool, port) {
+  const m = tool.mcp;
+  const L = [];
+  L.push('- id: mcp-' + tool.id);
+  L.push("  name: '@deepseek-ai/dsh-mcp-client'");
+  L.push('  config:');
+  L.push('    serverName: ' + m.serverName);
+  L.push('    transport: ' + m.transport);
+  if (m.transport === 'streamable-http') {
+    L.push('    url: ' + yq(subst(m.url, port, tool)));
+  } else {
+    L.push('    command: ' + m.command);
+    if (m.args && m.args.length) L.push('    args: [' + m.args.map(a => yq(subst(a, port, tool))).join(', ') + ']');
+    if (tool.cwd) L.push('    cwd: ' + yq(subst(tool.cwd, port, tool)));
+  }
+  return L.join('\n');
+}
+const MCP_BLOCK_BEGIN = '# >>> dsh-launcher-mcp-auto(由黑鲸启动器自动生成,请勿手改)';
+const MCP_BLOCK_END = '# <<< dsh-launcher-mcp-auto';
+function syncMcpPatch() {
+  const profile = toolsCfg.dshProfile;
+  const dir = path.join(DSH_HOME_DIR, 'profiles', profile);
+  const patchPath = path.join(dir, 'cordis.patch.yml');
+  const entries = [];
+  for (const t of toolsCfg.tools) {
+    if (!t.mcp) continue;
+    const st = toolsState[t.id] || {};
+    const injectable = t.manage === false || (st.status === 'running' && st.healthOk !== false);
+    if (!injectable) continue;
+    entries.push(mcpEntryYaml(t, (st && st.port) || t.port || 0));
+  }
+  let text = '';
+  if (fs.existsSync(patchPath)) text = fs.readFileSync(patchPath, 'utf8');
+  else {
+    fs.mkdirSync(dir, { recursive: true });
+    text = '# 黑鲸启动器生成的 DSH profile 补丁层(原文件缺失)\n';
+  }
+  const bi = text.indexOf(MCP_BLOCK_BEGIN);
+  const ei = text.indexOf(MCP_BLOCK_END);
+  let block = '';
+  if (entries.length) block = '\n' + MCP_BLOCK_BEGIN + '\n' + entries.join('\n\n') + '\n' + MCP_BLOCK_END + '\n';
+  let next;
+  if (bi >= 0 && ei > bi) next = text.slice(0, bi) + block + text.slice(ei + MCP_BLOCK_END.length);
+  else if (bi >= 0) next = text.slice(0, bi) + block;
+  else next = text.replace(/\s*$/, '') + (entries.length ? '\n' : '') + block;
+  for (const t of toolsCfg.tools) {
+    if (toolsState[t.id]) toolsState[t.id].mcpInjected = entries.some(e => e.indexOf('- id: mcp-' + t.id) === 0);
+  }
+  if (text.trim() === '') next = next.replace(/^\s+/, '');
+  if (next !== text) fs.writeFileSync(patchPath, next);
+  saveToolsState();
+  return { patchPath: patchPath, entries: entries.length, injectedIds: toolsCfg.tools.filter(t => toolsState[t.id] && toolsState[t.id].mcpInjected).map(t => t.id) };
+}
+function toolsWatchLoop() {
+  for (const t of toolsCfg.tools) {
+    const st = toolsState[t.id];
+    if (!st || st.status !== 'running' || !st.pid) continue;
+    let alive = true;
+    try { process.kill(st.pid, 0); } catch (e) { alive = false; }
+    if (!alive) {
+      st.status = 'error';
+      st.pid = null;
+      st.lastError = '进程已退出(未被捕获的退出事件)';
+      saveToolsState();
+      syncMcpPatch();
+      continue;
+    }
+    healthProbe(t, st.port || t.port).then(ok => {
+      const cur = toolsState[t.id];
+      if (!cur || cur.status !== 'running') return;
+      if (cur.healthOk !== ok) {
+        cur.healthOk = ok;
+        saveToolsState();
+      }
+      if (ok === true && t.mcp && cur.mcpTools === null) {
+        probeMcpForTool(t.id).then(() => syncMcpPatch()).catch(() => {});
+      }
+    }).catch(() => {});
   }
 }
 
@@ -2167,6 +2757,7 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
       <button class="nav-item" data-view="chat"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>对话</button>
       <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>遥控台</button>
+      <button class="nav-item" data-view="tools"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h4V4a1 1 0 011-1h2a1 1 0 011 1v.5h4a1 1 0 011 1V11a1 1 0 01-1 1H3a1 1 0 01-1-1V5.5a1 1 0 011-1z"/><path d="M2 8h12M6 8v2.5"/></svg></span>工具</button>
       <button class="nav-item" data-view="memory"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11z"/><path d="M8 5.5v3l2 1.2"/></svg></span>记忆</button>
       <button class="nav-item" data-view="kb"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="8" cy="3.2" rx="5.5" ry="2.1"/><path d="M2.5 3.2v9.6c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1V3.2"/><path d="M2.5 8c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1"/></svg></span>知识库</button>
       <button class="nav-item" data-view="xt"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>扩展</button>
@@ -2244,6 +2835,27 @@ const PAGE_HTML = `<div class="app">
       </div>
       <iframe id="chatFrame" src="about:blank" style="width:100%;height:calc(100vh - 44px);border:1px solid var(--border-l2);border-radius:12px;background:#fff"></iframe>
     </section>
+    <section class="view" id="view-tools" hidden>
+      <div class="row" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <h2 class="title" style="margin:0">本地 AI 工具</h2>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <button class="btn outline sm" id="btnToolsReload">重新加载配置</button>
+          <button class="btn outline sm" id="btnToolsStopAll">全部停止</button>
+          <button class="btn primary sm" id="btnToolsStartAll">全部启动</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center" id="mcpBar"><span class="muted">MCP 注入检测中…</span></div>
+        <div class="hint" style="margin-top:8px">工具配置在启动器数据目录 tools.yml;MCP 注入目标为 DSH profile「<span id="mcpProfileName">web</span>」的 cordis.patch.yml(DSH 支持热加载,也可重启生效)。</div>
+      </div>
+      <div id="toolsList" class="plugin-list" style="display:flex;flex-direction:column;gap:10px"><span class="muted">加载中…</span></div>
+    </section>
+    <div class="modal-overlay" id="toolLogModal" hidden>
+      <div class="modal-dialog" style="max-width:720px">
+        <div class="row spread"><b id="toolLogTitle">工具日志</b><button class="btn outline sm" id="btnCloseToolLog">关闭</button></div>
+        <pre class="mon-pre" id="toolLogBody" style="max-height:420px;overflow:auto;margin-top:8px;white-space:pre-wrap">加载中…</pre>
+      </div>
+    </div>
     <section class="view" id="view-memory" hidden>
       <h2 class="title">对话记忆</h2>
       <div class="card">
@@ -2553,7 +3165,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['status', 'chat', 'monitor', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
+  var views = ['status', 'chat', 'monitor', 'tools', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -3762,6 +4374,126 @@ const PAGE_JS = `(function () {
       });
     }).catch(function () {});
   }
+  // ---- 本地 AI 工具 ----
+  var toolPollTimer = null;
+  function loadTools(force) {
+    return api('/api/tools').then(function (d) {
+      renderTools(d);
+      return d;
+    }).catch(function () {});
+  }
+  function renderTools(d) {
+    if (!d) return;
+    var pn = document.querySelector('#mcpProfileName');
+    if (pn) pn.textContent = d.dshProfile || 'web';
+    var bar = document.querySelector('#mcpBar');
+    if (bar) {
+      bar.innerHTML = '<span class="pill ' + ((d.tools || []).some(function (t) { return t.mcpInjected; }) ? 'ok' : 'idle') + '">MCP 已注入 ' + (d.tools || []).filter(function (t) { return t.mcpInjected; }).length + ' 个服务器</span>' +
+        (d.dsh && d.dsh.running ? '<span class="pill ok">DSH 运行中</span>' : '<span class="pill bad">DSH 未运行</span>') +
+        '<span style="flex:1"></span>' +
+        '<button class="btn outline sm" id="btnMcpSync">同步 MCP</button>' +
+        '<button class="btn outline sm" id="btnRestartDsh">重启 DSH 生效</button>';
+      var sb = document.querySelector('#btnMcpSync');
+      if (sb) sb.onclick = function () {
+        api('/api/tools/mcp/sync', { method: 'POST' }).then(function (r) {
+          toast('MCP 已同步:注入 ' + r.entries + ' 个服务器');
+          loadTools();
+        }).catch(function (e) { toast(e.message); });
+      };
+      var rb = document.querySelector('#btnRestartDsh');
+      if (rb) rb.onclick = function () {
+        if (!confirm('重启 DSH 使 MCP 注入生效?(仅本启动器启动的 DSH 可重启)')) return;
+        api('/api/tools/restart-dsh', { method: 'POST' }).then(function () { toast('DSH 已重启'); loadTools(); }).catch(function (e) { toast(e.message); });
+      };
+    }
+    var el = document.querySelector('#toolsList');
+    if (!el) return;
+    var statusTxt = { stopped: '未运行', starting: '启动中', running: '运行中', stopping: '停止中', error: '异常' };
+    el.innerHTML = (d.tools || []).map(function (t) {
+      var pillCls = t.status === 'running' ? (t.healthOk === false ? 'bad' : 'ok') : (t.status === 'starting' ? 'info' : (t.status === 'error' ? 'bad' : 'idle'));
+      var mcpPill = t.hasMcp
+        ? '<span class="pill ' + (t.mcpInjected ? 'ok' : 'idle') + '">MCP' + (t.mcpTools !== null && t.mcpTools >= 0 ? ' · ' + t.mcpTools + ' 工具' : (t.mcpTools === -1 ? ' · 探测失败' : '')) + (t.mcpInjected ? ' · 已注入' : '') + '</span>'
+        : '';
+      var errLine = t.lastError ? ('<div class="plugin-meta" style="color:var(--error)">' + escHtml(String(t.lastError).split('\\n')[0].slice(0, 140)) + '</div>') : '';
+      return '<div class="plugin-row" style="align-items:flex-start">' +
+        '<div class="plugin-info">' +
+        '<div class="plugin-name" style="font-weight:500">' + escHtml(t.name) + ' <span class="pill ' + pillCls + '">' + (statusTxt[t.status] || t.status) + '</span>' +
+        (t.status === 'running' && t.port ? ' <span class="pill info">:' + t.port + '</span>' : '') + mcpPill + '</div>' +
+        '<div class="plugin-meta">' + escHtml(t.command || '(stdio 直连 DSH)') + (t.manage ? '' : ' · 无需进程') + '</div>' +
+        errLine +
+        '</div>' +
+        '<div class="row" style="gap:6px;flex:none">' +
+        ((t.status === 'running' || t.status === 'starting' || t.status === 'error')
+          ? '<button class="btn outline sm" data-toolstop="' + t.id + '">停止</button><button class="btn outline sm" data-toolrestart="' + t.id + '">重启</button>'
+          : '<button class="btn primary sm" data-toolstart="' + t.id + '"' + (t.manage ? '' : ' disabled title="stdio 直连 DSH,无需启动"') + '>启动</button>') +
+        '<button class="btn outline sm" data-toollog="' + t.id + '">日志</button>' +
+        '</div></div>';
+    }).join('');
+    document.querySelectorAll('#toolsList [data-toolstart]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        b.disabled = true;
+        api('/api/tools/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.toolstart }) })
+          .then(function (r) { toast('已启动(端口 ' + r.port + ')'); loadTools(); })
+          .catch(function (e) { toast(e.message); b.disabled = false; });
+      });
+    });
+    document.querySelectorAll('#toolsList [data-toolstop]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        api('/api/tools/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.toolstop }) })
+          .then(function () { toast('已停止'); loadTools(); })
+          .catch(function (e) { toast(e.message); });
+      });
+    });
+    document.querySelectorAll('#toolsList [data-toolrestart]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        api('/api/tools/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.toolrestart }) })
+          .then(function (r) { toast('已重启(端口 ' + r.port + ')'); loadTools(); })
+          .catch(function (e) { toast(e.message); });
+      });
+    });
+    document.querySelectorAll('#toolsList [data-toollog]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        openToolLog(b.dataset.toollog);
+      });
+    });
+  }
+  var toolLogTimer = null;
+  function openToolLog(id) {
+    var modal = document.querySelector('#toolLogModal');
+    if (!modal) return;
+    modal.hidden = false;
+    document.querySelector('#toolLogTitle').textContent = '日志 · ' + id;
+    var load = function () {
+      api('/api/tools/log?id=' + encodeURIComponent(id)).then(function (text) {
+        var body = document.querySelector('#toolLogBody');
+        body.textContent = text || '(暂无日志)';
+        body.scrollTop = body.scrollHeight;
+      }).catch(function () {});
+    };
+    load();
+    if (toolLogTimer) clearInterval(toolLogTimer);
+    toolLogTimer = setInterval(load, 2000);
+  }
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.id === 'btnCloseToolLog') {
+      document.querySelector('#toolLogModal').hidden = true;
+      if (toolLogTimer) { clearInterval(toolLogTimer); toolLogTimer = null; }
+    }
+    if (e.target && e.target.id === 'toolLogModal') {
+      e.target.hidden = true;
+      if (toolLogTimer) { clearInterval(toolLogTimer); toolLogTimer = null; }
+    }
+  });
+  $('#btnToolsReload').addEventListener('click', function () {
+    api('/api/tools/reload', { method: 'POST' }).then(function (r) { toast('配置已重载(' + r.count + ' 个工具)'); loadTools(); }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnToolsStartAll').addEventListener('click', function () {
+    api('/api/tools/start-all', { method: 'POST' }).then(function (r) { toast('已启动 ' + (r.started || []).length + ' 个工具'); loadTools(); }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnToolsStopAll').addEventListener('click', function () {
+    if (!confirm('停止全部工具?')) return;
+    api('/api/tools/stop-all', { method: 'POST' }).then(function (r) { toast('已停止 ' + (r.stopped || []).length + ' 个工具'); loadTools(); }).catch(function (e) { toast(e.message); });
+  });
   // ---- 远程遥控(小程序) ----
   function renderRelay(st) {
     if (!st) return;
@@ -3979,7 +4711,9 @@ const PAGE_JS = `(function () {
   loadMemory();
   loadKb();
   loadRelay();
+  loadTools();
   setInterval(loadRelay, 3000);
+  setInterval(loadTools, 3000);
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);
@@ -4166,6 +4900,96 @@ const server = http.createServer(async (req, res) => {
       await relayStop(true);
       return sendJSON(res, 200, { ok: true });
     }
+    // 本地 AI 工具控制平面
+    if (p === '/api/tools' && m === 'GET') {
+      const list = toolsCfg.tools.map(t => {
+        const st = toolsState[t.id] || {};
+        return {
+          id: t.id, name: t.name, command: t.command, manage: t.manage,
+          port: st.port || t.port,
+          status: st.status || 'stopped',
+          healthOk: st.healthOk === undefined ? null : st.healthOk,
+          mcpTools: st.mcpTools === undefined ? null : st.mcpTools,
+          mcpError: st.mcpError || '',
+          mcpInjected: !!st.mcpInjected,
+          hasMcp: !!t.mcp,
+          lastError: st.lastError || '',
+          startedAt: st.startedAt || 0,
+        };
+      });
+      return sendJSON(res, 200, { dshProfile: toolsCfg.dshProfile, tools: list, dsh: await getStatus() });
+    }
+    if (p === '/api/tools/start' && m === 'POST') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, await toolStart(String(b.id || ''))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/tools/stop' && m === 'POST') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, await toolStop(String(b.id || ''))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/tools/restart' && m === 'POST') {
+      const b = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, await toolRestart(String(b.id || ''))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/tools/start-all' && m === 'POST') {
+      const done = [];
+      for (const t of toolsCfg.tools) {
+        const st = toolsState[t.id];
+        if (!t.manage || (st && (st.status === 'running' || st.status === 'starting'))) continue;
+        try { await toolStart(t.id); done.push(t.id); } catch (e) {}
+      }
+      return sendJSON(res, 200, { started: done });
+    }
+    if (p === '/api/tools/stop-all' && m === 'POST') {
+      const done = [];
+      for (const t of toolsCfg.tools) {
+        const st = toolsState[t.id];
+        if (st && (st.status === 'running' || st.status === 'starting' || st.status === 'error')) {
+          try { await toolStop(t.id); done.push(t.id); } catch (e) {}
+        }
+      }
+      return sendJSON(res, 200, { stopped: done });
+    }
+    if (p === '/api/tools/log' && m === 'GET') {
+      const id = String(u.searchParams.get('id') || '');
+      return send(res, 200, toolLogTail(id, 30000), 'text/plain; charset=utf-8');
+    }
+    if (p === '/api/tools/reload' && m === 'POST') {
+      try {
+        loadToolsCfg();
+        reconcilePids();
+        syncMcpPatch();
+        return sendJSON(res, 200, { ok: true, count: toolsCfg.tools.length });
+      } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/tools/mcp' && m === 'GET') {
+      const st = await getStatus();
+      return sendJSON(res, 200, {
+        patchPath: path.join(DSH_HOME_DIR, 'profiles', toolsCfg.dshProfile, 'cordis.patch.yml'),
+        injectedIds: toolsCfg.tools.filter(t => toolsState[t.id] && toolsState[t.id].mcpInjected).map(t => t.id),
+        dshRunning: st.running, dshOwned: st.owned, dshUrl: st.url,
+      });
+    }
+    if (p === '/api/tools/mcp/sync' && m === 'POST') {
+      for (const t of toolsCfg.tools) {
+        const st = toolsState[t.id];
+        if (st && t.mcp && (t.manage === false || st.status === 'running') && st.mcpTools === null) {
+          try { await probeMcpForTool(t.id); } catch (e) {}
+        }
+      }
+      return sendJSON(res, 200, syncMcpPatch());
+    }
+    if (p === '/api/tools/restart-dsh' && m === 'POST') {
+      const st = await getStatus();
+      if (!st.owned) return sendJSON(res, 409, { error: 'DSH 非本启动器启动,无法重启(请手动重启)' });
+      if (st.running) { stopDsh(); await new Promise(r2 => setTimeout(r2, 1500)); }
+      const r3 = await startDsh();
+      return sendJSON(res, 200, { ok: !!r3.ok, error: r3.error || '' });
+    }
+
     if (p === '/api/dsh/sessions' && m === 'GET') {
       try {
         const r = await dshRpc('session.list', {});
@@ -4506,6 +5330,12 @@ if (relayCfg().url && relayCfg().launcherToken) {
   relayClient.running = true;
   relayCmdLoop();
 }
+
+// 工具控制平面启动:加载配置、对账 PID、同步 MCP 注入、健康巡检
+loadToolsCfg();
+reconcilePids();
+syncMcpPatch();
+setInterval(toolsWatchLoop, 5000);
 
 server.listen(UI_PORT, UI_HOST, () => {
   console.log('dsh-launcher v' + VERSION + ' listening on http://' + UI_HOST + ':' + UI_PORT);

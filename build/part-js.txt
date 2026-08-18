@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['status', 'chat', 'monitor', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
+  var views = ['status', 'chat', 'monitor', 'tools', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -1209,6 +1209,126 @@
       });
     }).catch(function () {});
   }
+  // ---- 本地 AI 工具 ----
+  var toolPollTimer = null;
+  function loadTools(force) {
+    return api('/api/tools').then(function (d) {
+      renderTools(d);
+      return d;
+    }).catch(function () {});
+  }
+  function renderTools(d) {
+    if (!d) return;
+    var pn = document.querySelector('#mcpProfileName');
+    if (pn) pn.textContent = d.dshProfile || 'web';
+    var bar = document.querySelector('#mcpBar');
+    if (bar) {
+      bar.innerHTML = '<span class="pill ' + ((d.tools || []).some(function (t) { return t.mcpInjected; }) ? 'ok' : 'idle') + '">MCP 已注入 ' + (d.tools || []).filter(function (t) { return t.mcpInjected; }).length + ' 个服务器</span>' +
+        (d.dsh && d.dsh.running ? '<span class="pill ok">DSH 运行中</span>' : '<span class="pill bad">DSH 未运行</span>') +
+        '<span style="flex:1"></span>' +
+        '<button class="btn outline sm" id="btnMcpSync">同步 MCP</button>' +
+        '<button class="btn outline sm" id="btnRestartDsh">重启 DSH 生效</button>';
+      var sb = document.querySelector('#btnMcpSync');
+      if (sb) sb.onclick = function () {
+        api('/api/tools/mcp/sync', { method: 'POST' }).then(function (r) {
+          toast('MCP 已同步:注入 ' + r.entries + ' 个服务器');
+          loadTools();
+        }).catch(function (e) { toast(e.message); });
+      };
+      var rb = document.querySelector('#btnRestartDsh');
+      if (rb) rb.onclick = function () {
+        if (!confirm('重启 DSH 使 MCP 注入生效?(仅本启动器启动的 DSH 可重启)')) return;
+        api('/api/tools/restart-dsh', { method: 'POST' }).then(function () { toast('DSH 已重启'); loadTools(); }).catch(function (e) { toast(e.message); });
+      };
+    }
+    var el = document.querySelector('#toolsList');
+    if (!el) return;
+    var statusTxt = { stopped: '未运行', starting: '启动中', running: '运行中', stopping: '停止中', error: '异常' };
+    el.innerHTML = (d.tools || []).map(function (t) {
+      var pillCls = t.status === 'running' ? (t.healthOk === false ? 'bad' : 'ok') : (t.status === 'starting' ? 'info' : (t.status === 'error' ? 'bad' : 'idle'));
+      var mcpPill = t.hasMcp
+        ? '<span class="pill ' + (t.mcpInjected ? 'ok' : 'idle') + '">MCP' + (t.mcpTools !== null && t.mcpTools >= 0 ? ' · ' + t.mcpTools + ' 工具' : (t.mcpTools === -1 ? ' · 探测失败' : '')) + (t.mcpInjected ? ' · 已注入' : '') + '</span>'
+        : '';
+      var errLine = t.lastError ? ('<div class="plugin-meta" style="color:var(--error)">' + escHtml(String(t.lastError).split('\n')[0].slice(0, 140)) + '</div>') : '';
+      return '<div class="plugin-row" style="align-items:flex-start">' +
+        '<div class="plugin-info">' +
+        '<div class="plugin-name" style="font-weight:500">' + escHtml(t.name) + ' <span class="pill ' + pillCls + '">' + (statusTxt[t.status] || t.status) + '</span>' +
+        (t.status === 'running' && t.port ? ' <span class="pill info">:' + t.port + '</span>' : '') + mcpPill + '</div>' +
+        '<div class="plugin-meta">' + escHtml(t.command || '(stdio 直连 DSH)') + (t.manage ? '' : ' · 无需进程') + '</div>' +
+        errLine +
+        '</div>' +
+        '<div class="row" style="gap:6px;flex:none">' +
+        ((t.status === 'running' || t.status === 'starting' || t.status === 'error')
+          ? '<button class="btn outline sm" data-toolstop="' + t.id + '">停止</button><button class="btn outline sm" data-toolrestart="' + t.id + '">重启</button>'
+          : '<button class="btn primary sm" data-toolstart="' + t.id + '"' + (t.manage ? '' : ' disabled title="stdio 直连 DSH,无需启动"') + '>启动</button>') +
+        '<button class="btn outline sm" data-toollog="' + t.id + '">日志</button>' +
+        '</div></div>';
+    }).join('');
+    document.querySelectorAll('#toolsList [data-toolstart]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        b.disabled = true;
+        api('/api/tools/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.toolstart }) })
+          .then(function (r) { toast('已启动(端口 ' + r.port + ')'); loadTools(); })
+          .catch(function (e) { toast(e.message); b.disabled = false; });
+      });
+    });
+    document.querySelectorAll('#toolsList [data-toolstop]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        api('/api/tools/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.toolstop }) })
+          .then(function () { toast('已停止'); loadTools(); })
+          .catch(function (e) { toast(e.message); });
+      });
+    });
+    document.querySelectorAll('#toolsList [data-toolrestart]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        api('/api/tools/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: b.dataset.toolrestart }) })
+          .then(function (r) { toast('已重启(端口 ' + r.port + ')'); loadTools(); })
+          .catch(function (e) { toast(e.message); });
+      });
+    });
+    document.querySelectorAll('#toolsList [data-toollog]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        openToolLog(b.dataset.toollog);
+      });
+    });
+  }
+  var toolLogTimer = null;
+  function openToolLog(id) {
+    var modal = document.querySelector('#toolLogModal');
+    if (!modal) return;
+    modal.hidden = false;
+    document.querySelector('#toolLogTitle').textContent = '日志 · ' + id;
+    var load = function () {
+      api('/api/tools/log?id=' + encodeURIComponent(id)).then(function (text) {
+        var body = document.querySelector('#toolLogBody');
+        body.textContent = text || '(暂无日志)';
+        body.scrollTop = body.scrollHeight;
+      }).catch(function () {});
+    };
+    load();
+    if (toolLogTimer) clearInterval(toolLogTimer);
+    toolLogTimer = setInterval(load, 2000);
+  }
+  document.addEventListener('click', function (e) {
+    if (e.target && e.target.id === 'btnCloseToolLog') {
+      document.querySelector('#toolLogModal').hidden = true;
+      if (toolLogTimer) { clearInterval(toolLogTimer); toolLogTimer = null; }
+    }
+    if (e.target && e.target.id === 'toolLogModal') {
+      e.target.hidden = true;
+      if (toolLogTimer) { clearInterval(toolLogTimer); toolLogTimer = null; }
+    }
+  });
+  $('#btnToolsReload').addEventListener('click', function () {
+    api('/api/tools/reload', { method: 'POST' }).then(function (r) { toast('配置已重载(' + r.count + ' 个工具)'); loadTools(); }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnToolsStartAll').addEventListener('click', function () {
+    api('/api/tools/start-all', { method: 'POST' }).then(function (r) { toast('已启动 ' + (r.started || []).length + ' 个工具'); loadTools(); }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnToolsStopAll').addEventListener('click', function () {
+    if (!confirm('停止全部工具?')) return;
+    api('/api/tools/stop-all', { method: 'POST' }).then(function (r) { toast('已停止 ' + (r.stopped || []).length + ' 个工具'); loadTools(); }).catch(function (e) { toast(e.message); });
+  });
   // ---- 远程遥控(小程序) ----
   function renderRelay(st) {
     if (!st) return;
@@ -1426,7 +1546,9 @@
   loadMemory();
   loadKb();
   loadRelay();
+  loadTools();
   setInterval(loadRelay, 3000);
+  setInterval(loadTools, 3000);
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);
