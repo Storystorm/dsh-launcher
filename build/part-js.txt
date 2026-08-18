@@ -1018,10 +1018,12 @@
   var cmRating = 0;
   // ---- 登录与鉴权 ----
   var authUser = null;
+  var authWechat = null;
   var authPoll = null;
   function loadAuth() {
     return api('/api/auth/status').then(function (a) {
       authUser = a.loggedIn ? a.user : null;
+      authWechat = a.wechat || null;
       renderLoginChip();
       renderCommentAuth();
       renderPostAuth();
@@ -1031,8 +1033,16 @@
   function renderLoginChip() {
     var chip = document.querySelector('#loginChip');
     if (!chip) return;
+    var wxLine = '';
+    if (authWechat) {
+      wxLine = '<div class="row" style="gap:8px;margin-bottom:8px">' +
+        (authWechat.avatar ? '<img class="avatar" src="' + authWechat.avatar + '">' : '<span class="avatar"></span>') +
+        '<div style="flex:1;min-width:0;font-size:12px"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">微信 · ' + escHtml(authWechat.nickname || '微信用户') + '</div><div class="muted" style="font-size:10px">小程序遥控已绑定</div></div>' +
+        '<button class="btn outline sm" id="btnWxUnbind" style="padding:0 8px">解绑</button>' +
+        '</div>';
+    }
     if (authUser) {
-      chip.innerHTML = '<div class="row" style="gap:8px">' +
+      chip.innerHTML = wxLine + '<div class="row" style="gap:8px">' +
         (authUser.avatar ? '<img class="avatar" src="' + authUser.avatar + '">' : '<span class="avatar"></span>') +
         '<div style="flex:1;min-width:0;font-size:12px"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + authUser.name + '</div><div class="muted" style="font-size:10px">@' + authUser.login + '</div></div>' +
         '<button class="btn outline sm" id="btnLogout" style="padding:0 8px">退出</button>' +
@@ -1046,11 +1056,22 @@
           toast('已退出登录');
         });
       });
+    } else if (authWechat) {
+      chip.innerHTML = wxLine;
     } else {
       chip.innerHTML = '<button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button>';
       var li = document.querySelector('#btnLogin');
       if (li) li.addEventListener('click', openLoginModal);
     }
+    var ub = document.querySelector('#btnWxUnbind');
+    if (ub) ub.addEventListener('click', function () {
+      api('/api/relay/disconnect', { method: 'POST' }).then(function () {
+        authWechat = null;
+        renderLoginChip();
+        loadRelay();
+        toast('已解绑小程序遥控');
+      });
+    });
   }
   function openLoginModal() {
     document.querySelector('#loginModal').hidden = false;
@@ -1066,7 +1087,7 @@
     h += '<details style="margin-bottom:10px"><summary class="muted" style="font-size:12px;cursor:pointer">使用 GitHub 令牌登录</summary>' +
       '<div class="input-wrap" style="margin-top:8px;max-width:100%"><input id="authToken" type="password" placeholder="ghp_..."></div>' +
       '<button class="btn outline sm" id="btnAuthToken" style="margin-top:8px">登录</button></details>';
-    h += '<div class="muted" style="font-size:11px">微信扫码登录:需在「设置」页配置微信开放平台信息后自动启用。</div>';
+    h += '<div class="muted" style="font-size:11px">微信扫码登录:到「遥控台 → 远程遥控」生成配对码,用微信扫码绑定小程序即完成登录。</div>';
     body.innerHTML = h;
     var gh = document.querySelector('#authGithub');
     if (gh) gh.addEventListener('click', function () {
@@ -1188,6 +1209,76 @@
       });
     }).catch(function () {});
   }
+  // ---- 远程遥控(小程序) ----
+  function renderRelay(st) {
+    if (!st) return;
+    var dot = $('#relayDot');
+    if (dot) dot.className = 'dot ' + (st.online ? 'running' : (st.pairCode ? 'starting' : 'stopped'));
+    var state = $('#relayState');
+    if (state) {
+      state.textContent = st.online
+        ? '已连接 · 在线(' + st.url + ')'
+        : st.pairCode
+          ? '等待小程序扫码绑定…'
+          : st.bound
+            ? '已绑定,连接中…(' + st.url + ')'
+            : st.error
+              ? ('未连接 · ' + st.error)
+              : '未连接';
+    }
+    var urlInput = $('#relayUrl');
+    if (urlInput && st.url && !urlInput.value) urlInput.value = st.url;
+    var connectBtn = $('#btnRelayConnect');
+    if (connectBtn) connectBtn.textContent = st.bound ? '重新连接' : (st.pairCode ? '重新生成配对码' : '生成配对码');
+    var disBtn = $('#btnRelayDisconnect');
+    if (disBtn) disBtn.hidden = !(st.bound || st.pairCode);
+    var pairBox = $('#relayPairBox');
+    if (pairBox) pairBox.hidden = !st.pairCode;
+    if (st.pairCode) {
+      $('#relayPairCode').textContent = st.pairCode;
+      var qr = $('#relayQr');
+      if (qr) {
+        qr.src = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent('DSHPAIR:' + st.pairCode);
+        qr.onerror = function () { qr.style.display = 'none'; };
+      }
+    }
+    var bound = $('#relayBound');
+    if (bound) bound.hidden = !st.bound;
+    if (st.bound && st.boundUser) {
+      $('#relayBoundUser').textContent = '已绑定:微信 · ' + (st.boundUser.nickname || '微信用户') + (st.online ? '(在线)' : '(离线)');
+    }
+  }
+  function loadRelay() {
+    return api('/api/relay').then(function (st) {
+      renderRelay(st);
+      if (authWechat !== (st.boundUser || null)) {
+        authWechat = st.boundUser || null;
+        renderLoginChip();
+      }
+    }).catch(function () {});
+  }
+  $('#btnRelayConnect').addEventListener('click', function () {
+    var url = ($('#relayUrl').value || '').trim();
+    if (!url) { toast('请填写中继地址'); return; }
+    api('/api/relay/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url }),
+    }).then(function () {
+      toast('配对码已生成,请用微信扫码绑定');
+      loadRelay();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnRelayDisconnect').addEventListener('click', function () {
+    if (!confirm('断开并解绑小程序遥控?小程序侧将需要重新配对。')) return;
+    api('/api/relay/disconnect', { method: 'POST' }).then(function () {
+      authWechat = null;
+      renderLoginChip();
+      loadRelay();
+      toast('已断开并解绑');
+    }).catch(function (e) { toast(e.message); });
+  });
+
   // ---- 知识库 ----
   var kbInstalling = false;
   var kbFrameLoaded = false;
@@ -1334,6 +1425,8 @@
   loadDshModels();
   loadMemory();
   loadKb();
+  loadRelay();
+  setInterval(loadRelay, 3000);
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);

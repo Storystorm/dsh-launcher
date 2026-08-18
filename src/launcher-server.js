@@ -1160,6 +1160,7 @@ function authSnapshot() {
       expiresIn: Math.max(0, Math.round((deviceLogin.expiresAt - Date.now()) / 1000)),
     } : null,
     wechatConfigured: wechatConfigured,
+    wechat: (authStore && authStore.wechat) || null,
   };
 }
 function ghPostSmart(urlStr, bodyStr) {
@@ -1248,7 +1249,9 @@ async function pollDeviceLogin() {
   return null;
 }
 function logout() {
+  const wx = authStore && authStore.wechat;
   authStore = {};
+  if (wx) authStore.wechat = wx;
   saveAuth();
   deviceLogin = null;
 }
@@ -1583,6 +1586,129 @@ function openKb() {
   }
   openUrl(kbUrl());
   return true;
+}
+
+// ================================================================ 远程遥控(小程序中继)
+let relayClient = { running: false, online: false, pairCode: null, pairToken: null, error: null };
+function relayCfg() { return config.relay || {}; }
+function relayHttp(method, urlStr, bodyObj, opts) {
+  opts = opts || {};
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const lib = u.protocol === 'https:' ? https : http;
+    const body = bodyObj ? JSON.stringify(bodyObj) : null;
+    const headers = { 'Content-Type': 'application/json' };
+    if (body) headers['Content-Length'] = Buffer.byteLength(body);
+    if (opts.token) headers.Authorization = 'Bearer ' + opts.token;
+    const req = lib.request({
+      host: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, method: method, headers: headers,
+      timeout: opts.timeoutMs || 15000,
+    }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, json: JSON.parse(b) }); }
+        catch (e) { reject(new Error('中继返回解析失败(HTTP ' + res.statusCode + ')')); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('中继连接超时')));
+    req.on('error', reject);
+    if (body) req.write(body);
+    req.end();
+  });
+}
+async function relayExec(method, payload) {
+  if (method === 'launcher.status') {
+    const st = await getStatus();
+    return { running: st.running, url: st.url, version: VERSION, pid: st.pid || null };
+  }
+  const allow = { 'session.list': 1, 'session.history': 1, 'session.prompt': 1, 'session.cancel': 1, 'session.selectModel': 1, 'llm.models': 1, 'workspace.list': 1 };
+  if (!allow[method]) throw new Error('不支持的命令: ' + method);
+  const r = await dshRpc(method, payload || {});
+  const v = r && r.result && (r.result.value !== undefined ? r.result.value : r.result);
+  return (v === undefined || v === null) ? r : v;
+}
+async function relayStart(url) {
+  const base = String(url || '').trim().replace(/\/+$/, '');
+  if (!base) throw new Error('请填写中继地址');
+  config.relay = Object.assign({}, relayCfg(), { url: base });
+  saveJSON(CONFIG_PATH, config);
+  relayClient.error = null;
+  if (relayCfg().launcherToken) {
+    relayClient.running = true;
+    relayCmdLoop();
+    return { resumed: true };
+  }
+  const r = await relayHttp('POST', base + '/api/pair/create', { name: os.hostname() + ' · 黑鲸启动器' });
+  if (r.status !== 200) throw new Error((r.json && r.json.error) || '创建配对失败');
+  relayClient.pairCode = r.json.pairCode;
+  relayClient.pairToken = r.json.pairToken;
+  relayClient.running = true;
+  relayPairLoop();
+  return { pairCode: relayClient.pairCode };
+}
+async function relayPairLoop() {
+  while (relayClient.running && relayClient.pairToken && !relayCfg().launcherToken) {
+    try {
+      const r = await relayHttp('GET', relayCfg().url + '/api/pair/status?pairToken=' + relayClient.pairToken);
+      if (r.json && r.json.paired) {
+        config.relay = Object.assign({}, relayCfg(), { launcherToken: r.json.launcherToken, launcherId: r.json.launcherId });
+        saveJSON(CONFIG_PATH, config);
+        authStore.wechat = { openid: r.json.user.openid, nickname: r.json.user.nickname, avatar: r.json.user.avatar, at: Date.now() };
+        saveAuth();
+        relayClient.pairCode = null;
+        relayClient.pairToken = null;
+        relayCmdLoop();
+        return;
+      }
+      if (r.json && r.json.expired) {
+        relayClient.error = '配对码已过期,请重新生成';
+        relayClient.pairCode = null;
+        relayClient.pairToken = null;
+        return;
+      }
+    } catch (e) {
+      relayClient.error = String(e && e.message || e);
+    }
+    await new Promise(r2 => setTimeout(r2, 2500));
+  }
+}
+async function relayCmdLoop() {
+  relayClient.running = true;
+  while (relayClient.running && relayCfg().launcherToken) {
+    const token = relayCfg().launcherToken;
+    try {
+      const r = await relayHttp('GET', relayCfg().url + '/api/relay/poll?launcherToken=' + token, null, { timeoutMs: 40000 });
+      relayClient.online = true;
+      relayClient.error = null;
+      const cmds = (r.json && r.json.commands) || [];
+      if (cmds.length) {
+        const results = [];
+        for (const c of cmds) {
+          try { results.push({ id: c.id, ok: true, value: await relayExec(c.method, c.payload) }); }
+          catch (e) { results.push({ id: c.id, ok: false, error: String(e && e.message || e) }); }
+        }
+        await relayHttp('POST', relayCfg().url + '/api/relay/result', { launcherToken: token, results: results });
+      }
+    } catch (e) {
+      relayClient.online = false;
+      relayClient.error = String(e && e.message || e);
+      await new Promise(r2 => setTimeout(r2, 5000));
+    }
+  }
+}
+async function relayStop(unbind) {
+  relayClient.running = false;
+  relayClient.online = false;
+  relayClient.pairCode = null;
+  relayClient.pairToken = null;
+  if (unbind && relayCfg().launcherToken) {
+    try { await relayHttp('POST', relayCfg().url + '/api/relay/launcher-unbind', { launcherToken: relayCfg().launcherToken }); } catch (e) {}
+    config.relay = Object.assign({}, relayCfg(), { launcherToken: '', launcherId: '' });
+    saveJSON(CONFIG_PATH, config);
+    if (authStore.wechat) { delete authStore.wechat; saveAuth(); }
+  }
 }
 
 // ================================================================ 对话记忆管理
@@ -2178,6 +2304,31 @@ const PAGE_HTML = `<div class="app">
             </div>
           </div>
           <div class="row" id="monRes"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">远程遥控 · 小程序</div>
+        <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+          <span class="dot stopped" id="relayDot"></span>
+          <span class="muted" id="relayState" style="font-size:12px">未连接</span>
+        </div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
+          <div class="input-wrap" style="max-width:260px"><input id="relayUrl" type="text" placeholder="中继地址,如 http://127.0.0.1:8790"></div>
+          <button class="btn primary sm" id="btnRelayConnect">生成配对码</button>
+          <button class="btn outline sm" id="btnRelayDisconnect" hidden>断开 / 解绑</button>
+        </div>
+        <div id="relayPairBox" hidden style="margin-top:14px">
+          <div class="row" style="gap:18px;align-items:center;flex-wrap:wrap">
+            <div style="text-align:center">
+              <div style="font-size:34px;font-weight:700;letter-spacing:6px" id="relayPairCode">——</div>
+              <div class="muted" style="font-size:11px">配对码 10 分钟内有效</div>
+            </div>
+            <img id="relayQr" src="" alt="" style="width:120px;height:120px;border:1px solid var(--border-l2);border-radius:8px;background:#fff">
+            <div class="muted" style="font-size:12px;max-width:300px">用微信扫码,或在「黑鲸遥控」小程序中输入配对码完成绑定。绑定即微信登录,之后可在小程序远程下发需求、切换模型、取消任务。</div>
+          </div>
+        </div>
+        <div id="relayBound" hidden style="margin-top:12px">
+          <span class="pill ok" id="relayBoundUser">已绑定</span>
         </div>
       </div>
       <div class="card">
@@ -3420,10 +3571,12 @@ const PAGE_JS = `(function () {
   var cmRating = 0;
   // ---- 登录与鉴权 ----
   var authUser = null;
+  var authWechat = null;
   var authPoll = null;
   function loadAuth() {
     return api('/api/auth/status').then(function (a) {
       authUser = a.loggedIn ? a.user : null;
+      authWechat = a.wechat || null;
       renderLoginChip();
       renderCommentAuth();
       renderPostAuth();
@@ -3433,8 +3586,16 @@ const PAGE_JS = `(function () {
   function renderLoginChip() {
     var chip = document.querySelector('#loginChip');
     if (!chip) return;
+    var wxLine = '';
+    if (authWechat) {
+      wxLine = '<div class="row" style="gap:8px;margin-bottom:8px">' +
+        (authWechat.avatar ? '<img class="avatar" src="' + authWechat.avatar + '">' : '<span class="avatar"></span>') +
+        '<div style="flex:1;min-width:0;font-size:12px"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">微信 · ' + escHtml(authWechat.nickname || '微信用户') + '</div><div class="muted" style="font-size:10px">小程序遥控已绑定</div></div>' +
+        '<button class="btn outline sm" id="btnWxUnbind" style="padding:0 8px">解绑</button>' +
+        '</div>';
+    }
     if (authUser) {
-      chip.innerHTML = '<div class="row" style="gap:8px">' +
+      chip.innerHTML = wxLine + '<div class="row" style="gap:8px">' +
         (authUser.avatar ? '<img class="avatar" src="' + authUser.avatar + '">' : '<span class="avatar"></span>') +
         '<div style="flex:1;min-width:0;font-size:12px"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + authUser.name + '</div><div class="muted" style="font-size:10px">@' + authUser.login + '</div></div>' +
         '<button class="btn outline sm" id="btnLogout" style="padding:0 8px">退出</button>' +
@@ -3448,11 +3609,22 @@ const PAGE_JS = `(function () {
           toast('已退出登录');
         });
       });
+    } else if (authWechat) {
+      chip.innerHTML = wxLine;
     } else {
       chip.innerHTML = '<button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button>';
       var li = document.querySelector('#btnLogin');
       if (li) li.addEventListener('click', openLoginModal);
     }
+    var ub = document.querySelector('#btnWxUnbind');
+    if (ub) ub.addEventListener('click', function () {
+      api('/api/relay/disconnect', { method: 'POST' }).then(function () {
+        authWechat = null;
+        renderLoginChip();
+        loadRelay();
+        toast('已解绑小程序遥控');
+      });
+    });
   }
   function openLoginModal() {
     document.querySelector('#loginModal').hidden = false;
@@ -3468,7 +3640,7 @@ const PAGE_JS = `(function () {
     h += '<details style="margin-bottom:10px"><summary class="muted" style="font-size:12px;cursor:pointer">使用 GitHub 令牌登录</summary>' +
       '<div class="input-wrap" style="margin-top:8px;max-width:100%"><input id="authToken" type="password" placeholder="ghp_..."></div>' +
       '<button class="btn outline sm" id="btnAuthToken" style="margin-top:8px">登录</button></details>';
-    h += '<div class="muted" style="font-size:11px">微信扫码登录:需在「设置」页配置微信开放平台信息后自动启用。</div>';
+    h += '<div class="muted" style="font-size:11px">微信扫码登录:到「遥控台 → 远程遥控」生成配对码,用微信扫码绑定小程序即完成登录。</div>';
     body.innerHTML = h;
     var gh = document.querySelector('#authGithub');
     if (gh) gh.addEventListener('click', function () {
@@ -3590,6 +3762,76 @@ const PAGE_JS = `(function () {
       });
     }).catch(function () {});
   }
+  // ---- 远程遥控(小程序) ----
+  function renderRelay(st) {
+    if (!st) return;
+    var dot = $('#relayDot');
+    if (dot) dot.className = 'dot ' + (st.online ? 'running' : (st.pairCode ? 'starting' : 'stopped'));
+    var state = $('#relayState');
+    if (state) {
+      state.textContent = st.online
+        ? '已连接 · 在线(' + st.url + ')'
+        : st.pairCode
+          ? '等待小程序扫码绑定…'
+          : st.bound
+            ? '已绑定,连接中…(' + st.url + ')'
+            : st.error
+              ? ('未连接 · ' + st.error)
+              : '未连接';
+    }
+    var urlInput = $('#relayUrl');
+    if (urlInput && st.url && !urlInput.value) urlInput.value = st.url;
+    var connectBtn = $('#btnRelayConnect');
+    if (connectBtn) connectBtn.textContent = st.bound ? '重新连接' : (st.pairCode ? '重新生成配对码' : '生成配对码');
+    var disBtn = $('#btnRelayDisconnect');
+    if (disBtn) disBtn.hidden = !(st.bound || st.pairCode);
+    var pairBox = $('#relayPairBox');
+    if (pairBox) pairBox.hidden = !st.pairCode;
+    if (st.pairCode) {
+      $('#relayPairCode').textContent = st.pairCode;
+      var qr = $('#relayQr');
+      if (qr) {
+        qr.src = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent('DSHPAIR:' + st.pairCode);
+        qr.onerror = function () { qr.style.display = 'none'; };
+      }
+    }
+    var bound = $('#relayBound');
+    if (bound) bound.hidden = !st.bound;
+    if (st.bound && st.boundUser) {
+      $('#relayBoundUser').textContent = '已绑定:微信 · ' + (st.boundUser.nickname || '微信用户') + (st.online ? '(在线)' : '(离线)');
+    }
+  }
+  function loadRelay() {
+    return api('/api/relay').then(function (st) {
+      renderRelay(st);
+      if (authWechat !== (st.boundUser || null)) {
+        authWechat = st.boundUser || null;
+        renderLoginChip();
+      }
+    }).catch(function () {});
+  }
+  $('#btnRelayConnect').addEventListener('click', function () {
+    var url = ($('#relayUrl').value || '').trim();
+    if (!url) { toast('请填写中继地址'); return; }
+    api('/api/relay/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url }),
+    }).then(function () {
+      toast('配对码已生成,请用微信扫码绑定');
+      loadRelay();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnRelayDisconnect').addEventListener('click', function () {
+    if (!confirm('断开并解绑小程序遥控?小程序侧将需要重新配对。')) return;
+    api('/api/relay/disconnect', { method: 'POST' }).then(function () {
+      authWechat = null;
+      renderLoginChip();
+      loadRelay();
+      toast('已断开并解绑');
+    }).catch(function (e) { toast(e.message); });
+  });
+
   // ---- 知识库 ----
   var kbInstalling = false;
   var kbFrameLoaded = false;
@@ -3736,6 +3978,8 @@ const PAGE_JS = `(function () {
   loadDshModels();
   loadMemory();
   loadKb();
+  loadRelay();
+  setInterval(loadRelay, 3000);
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);
@@ -3898,6 +4142,29 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/kb/open' && m === 'POST') {
       try { return sendJSON(res, 200, { ok: openKb() }); }
       catch (e) { return sendJSON(res, 500, { error: e.message }); }
+    }
+    // 远程遥控(小程序中继)
+    if (p === '/api/relay' && m === 'GET') {
+      return sendJSON(res, 200, {
+        url: relayCfg().url || '',
+        configured: !!relayCfg().url,
+        bound: !!relayCfg().launcherToken,
+        launcherId: relayCfg().launcherId || '',
+        online: relayClient.online,
+        running: relayClient.running,
+        pairCode: relayClient.pairCode,
+        boundUser: (authStore && authStore.wechat) || null,
+        error: relayClient.error,
+      });
+    }
+    if (p === '/api/relay/connect' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, await relayStart(String(body.url || ''))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/relay/disconnect' && m === 'POST') {
+      await relayStop(true);
+      return sendJSON(res, 200, { ok: true });
     }
     if (p === '/api/dsh/sessions' && m === 'GET') {
       try {
@@ -4232,6 +4499,12 @@ function ensureWindowsDesktopShortcut() {
   } catch (e) {
     console.log('[dsh-launcher] 创建快捷方式异常: ' + e.message);
   }
+}
+
+// 启动器重启后自动恢复远程遥控连接
+if (relayCfg().url && relayCfg().launcherToken) {
+  relayClient.running = true;
+  relayCmdLoop();
 }
 
 server.listen(UI_PORT, UI_HOST, () => {

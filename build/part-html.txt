@@ -151,6 +151,31 @@
         </div>
       </div>
       <div class="card">
+        <div class="card-title">远程遥控 · 小程序</div>
+        <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+          <span class="dot stopped" id="relayDot"></span>
+          <span class="muted" id="relayState" style="font-size:12px">未连接</span>
+        </div>
+        <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:8px;align-items:center">
+          <div class="input-wrap" style="max-width:260px"><input id="relayUrl" type="text" placeholder="中继地址,如 http://127.0.0.1:8790"></div>
+          <button class="btn primary sm" id="btnRelayConnect">生成配对码</button>
+          <button class="btn outline sm" id="btnRelayDisconnect" hidden>断开 / 解绑</button>
+        </div>
+        <div id="relayPairBox" hidden style="margin-top:14px">
+          <div class="row" style="gap:18px;align-items:center;flex-wrap:wrap">
+            <div style="text-align:center">
+              <div style="font-size:34px;font-weight:700;letter-spacing:6px" id="relayPairCode">——</div>
+              <div class="muted" style="font-size:11px">配对码 10 分钟内有效</div>
+            </div>
+            <img id="relayQr" src="" alt="" style="width:120px;height:120px;border:1px solid var(--border-l2);border-radius:8px;background:#fff">
+            <div class="muted" style="font-size:12px;max-width:300px">用微信扫码,或在「黑鲸遥控」小程序中输入配对码完成绑定。绑定即微信登录,之后可在小程序远程下发需求、切换模型、取消任务。</div>
+          </div>
+        </div>
+        <div id="relayBound" hidden style="margin-top:12px">
+          <span class="pill ok" id="relayBoundUser">已绑定</span>
+        </div>
+      </div>
+      <div class="card">
         <div class="card-title">会话</div>
         <div id="dshSessions" class="plugin-list"><span class="muted">加载中…</span></div>
       </div>
