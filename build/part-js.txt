@@ -63,9 +63,9 @@
       var frame = $('#chatFrame');
       if (frame && !frame.dataset.loaded) {
         frame.dataset.loaded = '1';
-        frame.src = chatUrl;
+        frame.src = '/dsh/';
         frame.addEventListener('load', function () {
-          $('#chatHint').textContent = '已加载官方 DSH 界面';
+          $('#chatHint').textContent = '已加载官方 DSH 界面(由黑鲸启动器托管)';
         });
       }
       var link = $('#chatOpenLink');

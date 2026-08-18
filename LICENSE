@@ -1,21 +1,37 @@
-MIT License
+黑鲸启动器 许可协议(Black Whale Launcher License)
 
-Copyright (c) 2026 dsh-launcher contributors
+Copyright (c) 2026 黑鲸启动器(Black Whale Launcher)贡献者
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+本软件("黑鲸启动器")按以下条款授权使用。安装、复制或以任何方式使用本软件,
+即表示您同意本协议全部条款。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. 免费使用
+   任何个人、团队或企业均可免费使用本软件,包括商业环境中的内部使用。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+2. 禁止商业化二次开发
+   未经书面授权,任何人不得:
+   (a) 以本软件或其修改版为基础,进行商业化分发、销售、出租或提供付费服务;
+   (b) 将本软件或衍生作品作为商品或服务的一部分进行营利;
+   (c) 去除、修改或隐藏"黑鲸启动器"名称、标识及本版权声明。
+
+3. 二次分发
+   允许在保留"黑鲸启动器"名称、标识与本协议原文的前提下,免费向他人分发
+   未经修改的原始版本。修改后的版本仅限修改者个人或团队内部使用,不得分发。
+
+4. 保留名称
+   "黑鲸启动器"名称与鲸鱼标识是项目标识,任何使用与分发均须完整保留,不得替换。
+
+5. 免责声明
+   本软件按"现状"提供,不提供任何明示或暗示的保证。作者不对使用本软件
+   造成的任何直接或间接损失承担责任。
+
+6. 第三方组件
+   本软件内嵌或引用的第三方组件(如 Node.js 运行时、DeepSeek Harness 及其
+   鲸鱼标识等)各自遵循其原始许可,详见 NOTICE.md。
+
+--- English summary (non-authoritative; the Chinese text prevails) ---
+Free to use (including internal business use). Commercial derivative
+development, commercial redistribution, and removal of the "黑鲸启动器"
+(Black Whale Launcher) name/branding are prohibited. Unmodified free
+redistribution must keep the name and this license intact. Provided AS-IS
+without warranty.

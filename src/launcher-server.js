@@ -1323,6 +1323,50 @@ function deleteReview(repo, id) {
   return { ok: true, removed: before - entry.comments.length };
 }
 
+// ================================================================ DSH 前端同源托管 + 反向代理
+function resolveFrontendDir() {
+  const candidates = [
+    path.join(DSH_PREFIX, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist'),
+  ];
+  const run = resolveRun();
+  if (run && run.bin) {
+    try {
+      const real = fs.realpathSync(run.bin);
+      candidates.push(path.join(path.dirname(path.dirname(real)), 'node_modules', '@deepseek-ai', 'dsh-web-frontend', 'dist'));
+    } catch (e) {}
+  }
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, 'index.html'))) return c;
+  }
+  return null;
+}
+const MIME_MAP = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8', '.map': 'application/json',
+  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.webmanifest': 'application/manifest+json',
+};
+function pipeProxy(req, res, targetPath) {
+  return new Promise((resolve) => {
+    const u = new URL(checkUrl());
+    const headers = Object.assign({}, req.headers, { host: u.hostname + ':' + u.port, connection: 'close' });
+    delete headers['accept-encoding'];
+    const preq = http.request({
+      host: u.hostname, port: u.port, path: targetPath, method: req.method, headers: headers, timeout: 60000,
+    }, pres => {
+      res.writeHead(pres.statusCode || 502, pres.headers);
+      pres.pipe(res);
+      pres.on('end', () => resolve(true));
+      pres.on('error', () => resolve(false));
+    });
+    preq.on('timeout', () => { preq.destroy(); resolve(false); });
+    preq.on('error', () => { if (!res.headersSent) { try { res.writeHead(502); } catch (e) {} res.end('proxy error'); } resolve(false); });
+    req.pipe(preq);
+  });
+}
+const STATS_SWEEP_SCRIPT = '<script>(function(){function sweep(){try{var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),seen=[];while(w.nextNode()){var t=w.currentNode.textContent||"";if(!/(轮|步|LLM|分钟|turn|step)/.test(t)||t.trim().length>100)continue;var el=w.currentNode.parentElement;if(!el||seen.indexOf(el)>=0)continue;var cs=getComputedStyle(el);var m=(cs.backgroundColor||"").match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);if(m&&(+m[1])<40&&(+m[2])<40&&(+m[3])<40){var target=el;while(target&&target.offsetWidth<60&&target.parentElement){target=target.parentElement;}if(target&&target!==document.body){target.style.display="none";seen.push(target);}}}}catch(e){}}setInterval(sweep,2500);sweep();})();</script>';
+
 // ================================================================ DSH RPC 代理(会话/工作区/干预)
 function dshRpc(method, payload) {
   return new Promise((resolve, reject) => {
@@ -1487,7 +1531,9 @@ const ogFallback = (repo) => 'https://opengraph.githubassets.com/1/' + repo;
 
 function fetchText(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION } }, res => {
+    const fu = new URL(url);
+    const lib = fu.protocol === 'https:' ? https : http;
+    lib.get(url, { headers: { 'User-Agent': 'dsh-launcher/' + VERSION } }, res => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
         return fetchText(new URL(res.headers.location, url).toString()).then(resolve, reject);
@@ -2150,9 +2196,9 @@ const PAGE_JS = `(function () {
       var frame = $('#chatFrame');
       if (frame && !frame.dataset.loaded) {
         frame.dataset.loaded = '1';
-        frame.src = chatUrl;
+        frame.src = '/dsh/';
         frame.addEventListener('load', function () {
-          $('#chatHint').textContent = '已加载官方 DSH 界面';
+          $('#chatHint').textContent = '已加载官方 DSH 界面(由黑鲸启动器托管)';
         });
       }
       var link = $('#chatOpenLink');
@@ -3328,6 +3374,39 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/favicon.svg') return send(res, 200, FAVICON, 'image/svg+xml');
     if (p === '/group-qr.jpg') return send(res, 200, Buffer.from(GROUP_IMG_B64, 'base64'), 'image/jpeg');
+    // DSH 前端同源托管
+    if (p === '/dsh' || p === '/dsh/' || (p.startsWith('/dsh/') && !p.startsWith('/dsh/api/'))) {
+      const rel = p.slice(5);
+      const frontDir = resolveFrontendDir();
+      if (frontDir && rel && rel !== '/') {
+        try {
+          const file = path.join(frontDir, decodeURIComponent(rel).replace(/^\/+/, ''));
+          if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+            const ext = path.extname(file).toLowerCase();
+            return send(res, 200, fs.readFileSync(file), MIME_MAP[ext] || 'application/octet-stream');
+          }
+        } catch (e) {}
+      }
+      try {
+        const idx = await fetchText(checkUrl() + '/');
+        const injected = idx
+          .replace(/(src|href)="\/(assets[^"]*|favicon[^"]*|trio[^"]*|manifest[^"]*)"/g, '$1="/dsh/$2"')
+          .replace('</body>', STATS_SWEEP_SCRIPT + '</body>');
+        return send(res, 200, injected, 'text/html; charset=utf-8');
+      } catch (e) {
+        return send(res, 502, '<html><body style="font-family:sans-serif;padding:40px"><h3>无法连接 DSH 服务</h3><p>请先在「状态」页启动 DSH,再打开对话页。</p></body></html>', 'text/html; charset=utf-8');
+      }
+    }
+    if (p.startsWith('/dsh/api/')) {
+      const ok = await pipeProxy(req, res, '/api' + p.slice(8));
+      if (!ok) return send(res, 502, 'proxy error', 'text/plain');
+      return;
+    }
+    if (p.startsWith('/dsh/trio/')) {
+      const ok = await pipeProxy(req, res, '/trio' + p.slice(9));
+      if (!ok) return send(res, 502, 'proxy error', 'text/plain');
+      return;
+    }
     if (p === '/' && m === 'GET') {
       return send(res, 200, PAGE, 'text/html; charset=utf-8');
     }

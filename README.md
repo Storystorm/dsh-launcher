@@ -56,7 +56,7 @@
 
 ## 许可证
 
-- 本项目代码与构建脚本:**MIT**(见 [LICENSE](LICENSE))
+- 本项目:**免费使用,禁止商业化二次开发,须保留「黑鲸启动器」名称**(见 [LICENSE](LICENSE))
 - 第三方声明(鲸鱼 logo、Node.js 运行时等):见 [NOTICE.md](NOTICE.md)
 
 ## 免责声明
