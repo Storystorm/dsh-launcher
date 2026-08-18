@@ -1,0 +1,17 @@
+const fs = require('fs');
+const src = fs.readFileSync('/tmp/dsh-build/launcher-server.js', 'utf8');
+const m = src.match(/const PAGE_JS = `([^]*?)`;/);
+if (!m) throw new Error('PAGE_JS not found');
+const servedJs = (new Function('return `' + m[1] + '`'))();
+fs.writeFileSync('/tmp/dsh-build/served-js.js', servedJs);
+const m2 = src.match(/const PAGE_HTML = `([^]*?)`;/);
+const servedHtml = (new Function('return `' + m2[1] + '`'))();
+fs.writeFileSync('/tmp/dsh-build/served-html.html', servedHtml);
+const nav = (servedHtml.match(/data-view="[^"]+"/g) || []).map(s => s.replace('data-view="', '').replace('"', ''));
+console.log('nav items:', JSON.stringify(nav));
+const must = ['view-xt', 'xtPlugins', 'xtSkills', 'xtThemes', 'installArea', 'dshLatestLine', 'btnReinstall', '遥控台'];
+const gone = ['view-discover', 'view-market', 'view-skills', 'view-ui', 'view-install', 'trendingList', 'newestList', 'monVersion', 'monStorage'];
+let bad = 0;
+for (const x of must) { const ok = servedHtml.includes(x) || servedJs.includes(x); if (!ok) { bad++; console.log('MISSING: ' + x); } }
+for (const x of gone) { const present = servedHtml.includes(x) || servedJs.includes(x); if (present) { bad++; console.log('SHOULD-BE-GONE: ' + x); } }
+console.log(bad ? ('FAILED checks: ' + bad) : 'STRUCTURE OK');

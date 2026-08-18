@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'chat', 'memory', 'kb', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['status', 'chat', 'monitor', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -141,6 +141,8 @@
       rows.push(envRow('安装位置', env.paths.dataDir, null));
       $('#envTable').innerHTML = rows.join('');
       $('#statusNeedInstall').hidden = !!env.dsh;
+      var ia = $('#installArea');
+      if (ia) ia.hidden = !!env.dsh;
       $('#installHint').textContent = env.dsh
         ? '已检测到 DeepSeek Harness,可直接到「状态」页启动;「一键安装」将(重新)安装到本启动器目录。'
         : '将自动下载 Node.js(如需要)并通过 npm 安装 DeepSeek Harness,全程无需命令行。';
@@ -177,7 +179,7 @@
       if (r.ok) toast(r.alreadyRunning ? '服务已在运行' : '服务已启动');
       else {
         toast('启动失败: ' + (r.error || '未知错误'));
-        if (String(r.error).indexOf('尚未安装') >= 0) switchView('install');
+        if (String(r.error).indexOf('尚未安装') >= 0) switchView('status');
       }
     }).catch(function (e) {
       toast('启动失败: ' + e.message);
@@ -445,25 +447,6 @@
         res.innerHTML = '<span class="pill info">CPU ' + d.process.cpu + '%</span>' +
           '<span class="pill info">内存 ' + d.process.memMB + ' MB</span>';
       } else if (res) { res.innerHTML = ''; }
-      if (document.querySelector('#monVersion')) document.querySelector('#monVersion').textContent = d.dsh.version || '未知';
-      if (document.querySelector('#monHome')) document.querySelector('#monHome').textContent = d.dsh.home;
-      if (document.querySelector('#monProfiles')) {
-        document.querySelector('#monProfiles').textContent = (d.dsh.profiles || []).join('、') || '(无)';
-      }
-      if (document.querySelector('#monSettings')) document.querySelector('#monSettings').textContent = (d.settings || []).join('\n');
-      var sl = document.querySelector('#monSessions');
-      if (sl) {
-        sl.innerHTML = (d.sessions || []).length
-          ? d.sessions.map(function (x) {
-            return '<div class="plugin-row"><div class="plugin-info">' +
-              '<div class="plugin-name" style="font-weight:500">' + x.name + '</div>' +
-              '<div class="plugin-meta">' + fmtRelative(x.at) + ' · ' + fmtSize(x.size) + '</div>' +
-              '</div></div>';
-          }).join('')
-          : '<span class="muted">暂无会话记录</span>';
-      }
-      var st = document.querySelector('#monStorage');
-      if (st) st.textContent = 'DSH 数据目录: ' + d.storage.dshHomeMB + ' MB · 启动器数据: ' + d.storage.dataDirMB + ' MB';
     }).catch(function () {});
   }
   function fmtUp(sec) {
@@ -747,8 +730,6 @@
       '</div>' + btns + '</div>';
   }
   function renderDiscover(d) {
-    $('#trendingList').innerHTML = d.trending.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
-    $('#newestList').innerHTML = d.newest.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
     $('#marketList').innerHTML = d.trending.concat(d.newest).map(function (i) { return pluginRowHtml(i, true); }).join('');
     $('#uiList').innerHTML = d.uiThemes.length
       ? d.uiThemes.map(function (i) { return pluginRowHtml(i, true); }).join('')
@@ -758,8 +739,10 @@
         return '<a class="hub-chip" href="' + h.url + '" target="_blank">' + h.name + '<span class="muted">' + h.desc + '</span></a>';
       }).join('');
     }
-    $('#dshLatest').textContent = d.dsh.latest ? ('最新 ' + d.dsh.latest) : '';
-    $('#dshLatestMeta').textContent = d.dsh.at ? ('最近更新 ' + d.dsh.at) : (d.dsh.name || '官方仓库动态');
+    var dl = $('#dshLatestLine');
+    if (dl) dl.textContent = d.dsh.latest
+      ? ('最新 ' + d.dsh.latest + (d.dsh.at ? ' · 更新于 ' + d.dsh.at : ''))
+      : (d.dsh.name || '官方仓库动态');
     if (d.catalogError) {
       $('#marketList').innerHTML = '<span class="muted">目录获取失败: ' + d.catalogError + '</span>';
     }
@@ -818,9 +801,18 @@
   }
   function loadDiscover(force) {
     return api('/api/discover' + (force ? '?force=1' : '')).then(renderDiscover).catch(function (e) {
-      $('#trendingList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+      $('#marketList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
     });
   }
+  // 扩展页 tab 切换
+  document.querySelectorAll('.feed-tab[data-xt]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.feed-tab[data-xt]').forEach(function (x) { x.classList.toggle('active', x === b); });
+      $('#xtPlugins').hidden = b.dataset.xt !== 'plugins';
+      $('#xtSkills').hidden = b.dataset.xt !== 'skills';
+      $('#xtThemes').hidden = b.dataset.xt !== 'themes';
+    });
+  });
   $('#btnRefreshMarket').addEventListener('click', function () {
     toast('刷新目录…');
     loadDiscover(true).then(function () { toast('目录已刷新'); });
@@ -1290,7 +1282,7 @@
     if (e.target === this) this.hidden = true;
   });
   $('#btnBackPlugin').addEventListener('click', function () {
-    switchView('market');
+    switchView('xt');
   });
   $('#btnRefreshLog').addEventListener('click', loadLog);
   $('#btnClearLog').addEventListener('click', function () {
@@ -1298,6 +1290,13 @@
   });
   $('#btnRecheck').addEventListener('click', function () {
     loadEnv().then(function () { toast('检测完成'); });
+  });
+  $('#btnReinstall').addEventListener('click', function () {
+    switchView('status');
+    loadEnv().then(function () {
+      var ia = $('#installArea');
+      if (ia) ia.hidden = false;
+    });
   });
   $('#btnInstall').addEventListener('click', function () {
     api('/api/install', {

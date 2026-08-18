@@ -2038,46 +2038,19 @@ const PAGE_HTML = `<div class="app">
       </div>
     </div>
     <nav class="nav">
-      <button class="nav-item" data-view="install"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v8M4.8 5.7L8 9l3.2-3.3"/><path d="M2.5 11.5v1.5a1 1 0 001 1h9a1 1 0 001-1v-1.5"/></svg></span>安装</button>
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
       <button class="nav-item" data-view="chat"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>对话</button>
+      <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>遥控台</button>
       <button class="nav-item" data-view="memory"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11z"/><path d="M8 5.5v3l2 1.2"/></svg></span>记忆</button>
-<button class="nav-item" data-view="kb"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="8" cy="3.2" rx="5.5" ry="2.1"/><path d="M2.5 3.2v9.6c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1V3.2"/><path d="M2.5 8c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1"/></svg></span>知识库</button>
-      <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>监控</button>
-      <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
+      <button class="nav-item" data-view="kb"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="8" cy="3.2" rx="5.5" ry="2.1"/><path d="M2.5 3.2v9.6c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1V3.2"/><path d="M2.5 8c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1"/></svg></span>知识库</button>
+      <button class="nav-item" data-view="xt"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>扩展</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
-      <button class="nav-item" data-view="discover"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M10.6 5.4l-1.6 3.6-3.6 1.6 1.6-3.6z"/></svg></span>发现</button>
-      <button class="nav-item" data-view="market"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>插件</button>
-      <button class="nav-item" data-view="skills"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8l1.5 3.6 3.9.3-3 2.6 1 3.9-3.4-2-3.4 2 1-3.9-3-2.6 3.9-.3z"/></svg></span>技能</button>
-      <button class="nav-item" data-view="ui"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none"/></svg></span>界面</button>
+      <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
     </nav>
     <div class="login-chip" id="loginChip"><button class="btn outline sm" id="btnLogin" style="width:100%">登录 / 注册</button></div>
     <div class="sidebar-foot" id="sidebarFoot">黑鲸启动器 v0.4.0</div>
   </aside>
   <main class="main">
-    <section class="view" id="view-install" hidden>
-      <h2 class="title">安装 DeepSeek Harness</h2>
-      <div class="card">
-        <div class="env-table" id="envTable"><span class="muted">正在检测环境…</span></div>
-        <div class="row" style="margin-top:14px;flex-wrap:wrap">
-          <button class="btn primary" id="btnInstall">一键安装</button>
-          <button class="btn outline" id="btnRecheck">重新检测</button>
-          <label class="checkbox-row" style="font-size:12px;margin-left:8px"><input id="forcePortable" type="checkbox">强制使用便携版 Node.js</label>
-        </div>
-        <div class="hint" id="installHint"></div>
-      </div>
-      <div class="card" id="installProgressCard" hidden>
-        <div class="row spread">
-          <div id="installMessage" style="font-weight:600">安装中…</div>
-          <span class="muted" id="installPercent" style="font-size:12px">0%</span>
-        </div>
-        <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
-        <div class="log-box install-log" id="installLog"></div>
-        <div class="row" style="margin-top:10px">
-          <button class="btn outline sm" id="btnCancelInstall">取消</button>
-        </div>
-      </div>
-    </section>
     <section class="view" id="view-status">
       <h2 class="title">服务状态</h2>
       <div class="card">
@@ -2095,15 +2068,47 @@ const PAGE_HTML = `<div class="app">
             <button class="btn danger sm" id="btnStop" disabled>停止</button>
           </div>
         </div>
-        <div class="hint" id="statusNeedInstall" hidden style="margin-top:10px;color:var(--warn)">尚未安装 DeepSeek Harness,请先到「安装」页完成安装</div>
+        <div class="hint" id="statusNeedInstall" hidden style="margin-top:10px;color:var(--warn)">尚未安装 DeepSeek Harness,请在下方完成一键安装</div>
         <div class="row" id="updateBanner" hidden style="margin-top:10px">
           <span class="pill" style="background:#fff7e6;color:#b45309">发现新版本 <span id="updateLatest"></span></span>
           <a id="updateLink" href="#" target="_blank" style="font-size:12px">前往下载</a>
         </div>
       </div>
+      <div id="installArea" hidden>
+        <div class="card">
+          <div class="card-title">安装 DeepSeek Harness</div>
+          <div class="env-table" id="envTable"><span class="muted">正在检测环境…</span></div>
+          <div class="row" style="margin-top:14px;flex-wrap:wrap">
+            <button class="btn primary" id="btnInstall">一键安装</button>
+            <button class="btn outline" id="btnRecheck">重新检测</button>
+            <label class="checkbox-row" style="font-size:12px;margin-left:8px"><input id="forcePortable" type="checkbox">强制使用便携版 Node.js</label>
+          </div>
+          <div class="hint" id="installHint"></div>
+        </div>
+        <div class="card" id="installProgressCard" hidden>
+          <div class="row spread">
+            <div id="installMessage" style="font-weight:600">安装中…</div>
+            <span class="muted" id="installPercent" style="font-size:12px">0%</span>
+          </div>
+          <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+          <div class="log-box install-log" id="installLog"></div>
+          <div class="row" style="margin-top:10px">
+            <button class="btn outline sm" id="btnCancelInstall">取消</button>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="muted" style="font-size:12px">访问地址</div>
         <div style="margin-top:4px;font-size:14px"><a id="statusUrl" href="#" target="_blank">—</a></div>
+      </div>
+      <div class="card">
+        <div class="row spread">
+          <div>
+            <div class="muted" style="font-size:12px">DSH 官方动态</div>
+            <div style="margin-top:4px;font-size:13px"><span id="dshLatestLine">检测中…</span></div>
+          </div>
+          <a class="btn outline sm" id="dshReleaseLink" href="https://github.com/deepseek-ai/deepseek-harness/releases/latest" target="_blank" style="text-decoration:none">前往查看</a>
+        </div>
       </div>
     </section>
     <section class="view" id="view-chat" hidden style="max-width:none;position:relative;padding-top:2px">
@@ -2162,7 +2167,7 @@ const PAGE_HTML = `<div class="app">
       </div>
     </section>
     <section class="view" id="view-monitor" hidden>
-      <h2 class="title">监控 · 遥控台</h2>
+      <h2 class="title">遥控台</h2>
       <div class="card">
         <div class="row spread">
           <div class="row">
@@ -2230,6 +2235,10 @@ const PAGE_HTML = `<div class="app">
           <button class="btn primary" id="btnSave">保存设置</button>
           <span class="muted" style="font-size:12px" id="saveHint"></span>
         </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn outline sm" id="btnReinstall">环境检测 / 重新安装</button>
+          <span class="muted" style="font-size:11px">在状态页打开安装向导</span>
+        </div>
         <div class="hint" style="margin-top:14px" id="cfgPaths"></div>
       </div>
       <div class="card">
@@ -2287,38 +2296,33 @@ const PAGE_HTML = `<div class="app">
       </h2>
       <div id="postDetail"></div>
     </section>
-    <section class="view" id="view-discover" hidden>
-      <h2 class="title">发现</h2>
-      <div class="card">
-        <div class="card-title">官方动态</div>
-        <div class="row spread">
-          <div>
-            <div style="font-weight:600">DeepSeek Harness <span id="dshLatest"></span></div>
-            <div class="muted" id="dshLatestMeta" style="font-size:12px"></div>
+    <section class="view" id="view-xt" hidden>
+      <h2 class="title">扩展</h2>
+      <div class="card" style="padding:0">
+        <div class="feed-tabs">
+          <button class="feed-tab active" data-xt="plugins">插件</button>
+          <button class="feed-tab" data-xt="skills">技能</button>
+          <button class="feed-tab" data-xt="themes">主题</button>
+        </div>
+        <div id="xtPlugins" style="padding:14px 18px">
+          <div class="row spread" style="margin-bottom:6px">
+            <span class="muted" style="font-size:12px">来自 GitHub topic:dsh-plugin,安装后重启 dsh 生效</span>
+            <button class="btn outline sm" id="btnRefreshMarket">刷新</button>
           </div>
-          <a id="dshReleaseLink" href="https://github.com/deepseek-ai/deepseek-harness/releases/latest" target="_blank" class="btn outline sm" style="text-decoration:none">查看发布</a>
+          <div id="marketList" class="plugin-list"><span class="muted">加载中…</span></div>
+          <div class="card" id="pluginJobCard" hidden style="margin-top:14px;box-shadow:none;border:1px solid var(--border-l2)">
+            <div class="card-title" id="pluginJobTitle">插件安装</div>
+            <div class="log-box" id="pluginJobLog" style="height:150px"></div>
+          </div>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-title">热门插件 <span class="muted" style="font-weight:400">· GitHub Star 排行</span></div>
-        <div id="trendingList" class="plugin-list"><span class="muted">加载中…</span></div>
-      </div>
-      <div class="card">
-        <div class="card-title">新晋更新 <span class="muted" style="font-weight:400">· 最近活跃</span></div>
-        <div id="newestList" class="plugin-list"><span class="muted">加载中…</span></div>
-      </div>
-    </section>
-    <section class="view" id="view-market" hidden>
-      <h2 class="title">插件</h2>
-      <div class="card">
-        <div class="row spread" style="margin-bottom:6px">
-          <span class="muted" style="font-size:12px">来自 GitHub topic:dsh-plugin 的社区插件,点击「安装」后重启 dsh 生效</span>
-          <button class="btn outline sm" id="btnRefreshMarket">刷新</button>
+        <div id="xtSkills" style="padding:14px 18px" hidden>
+          <div class="hint" style="margin-bottom:10px">针对每个技能可品评、打分、写评论;安装走 GitHub / SkillHub 等渠道</div>
+          <div id="skillsHubs" class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px"></div>
+          <div id="skillsList" class="plugin-list"><span class="muted">加载中…</span></div>
         </div>
-        <div id="marketList" class="plugin-list"><span class="muted">加载中…</span></div>
-        <div class="card" id="pluginJobCard" hidden style="margin-top:14px;box-shadow:none;border:1px solid var(--border-l2)">
-          <div class="card-title" id="pluginJobTitle">插件安装</div>
-          <div class="log-box" id="pluginJobLog" style="height:150px"></div>
+        <div id="xtThemes" style="padding:14px 18px" hidden>
+          <div class="hint" style="margin-bottom:10px">社区提供的主题 / 皮肤插件,美化 DSH Web UI;安装后重启 dsh 生效</div>
+          <div id="uiList" class="plugin-list"><span class="muted">暂无主题类插件</span></div>
         </div>
       </div>
     </section>
@@ -2373,26 +2377,6 @@ const PAGE_HTML = `<div class="app">
         <ul class="review-list" id="pdComments"></ul>
       </div>
     </section>
-    <section class="view" id="view-skills" hidden>
-      <h2 class="title">技能</h2>
-      <div class="card">
-        <div class="card-title">社区集散目录 <span class="muted" style="font-weight:400">· 跳转到已有社区</span></div>
-        <div id="skillsHubs" class="row" style="flex-wrap:wrap;gap:8px"></div>
-      </div>
-      <div class="card">
-        <div class="card-title">技能库 <span class="muted" style="font-weight:400">· GitHub topic:dsh-skill</span></div>
-        <div class="hint" style="margin-bottom:10px">针对每个技能可品评、打分、写评论;安装走 GitHub / SkillHub 等现有渠道</div>
-        <div id="skillsList" class="plugin-list"><span class="muted">加载中…</span></div>
-      </div>
-    </section>
-    <section class="view" id="view-ui" hidden>
-      <h2 class="title">界面</h2>
-      <div class="card">
-        <div class="card-title">UI 主题与皮肤插件</div>
-        <div class="hint" style="margin-bottom:10px">社区提供的主题 / 设计 / 皮肤插件,用于美化或替换 DSH Web UI;安装后重启 dsh 服务生效</div>
-        <div id="uiList" class="plugin-list"><span class="muted">加载中…</span></div>
-      </div>
-    </section>
   </main>
 </div>
 <div class="modal-overlay" id="loginModal" hidden>
@@ -2418,7 +2402,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'chat', 'memory', 'kb', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['status', 'chat', 'monitor', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2559,6 +2543,8 @@ const PAGE_JS = `(function () {
       rows.push(envRow('安装位置', env.paths.dataDir, null));
       $('#envTable').innerHTML = rows.join('');
       $('#statusNeedInstall').hidden = !!env.dsh;
+      var ia = $('#installArea');
+      if (ia) ia.hidden = !!env.dsh;
       $('#installHint').textContent = env.dsh
         ? '已检测到 DeepSeek Harness,可直接到「状态」页启动;「一键安装」将(重新)安装到本启动器目录。'
         : '将自动下载 Node.js(如需要)并通过 npm 安装 DeepSeek Harness,全程无需命令行。';
@@ -2595,7 +2581,7 @@ const PAGE_JS = `(function () {
       if (r.ok) toast(r.alreadyRunning ? '服务已在运行' : '服务已启动');
       else {
         toast('启动失败: ' + (r.error || '未知错误'));
-        if (String(r.error).indexOf('尚未安装') >= 0) switchView('install');
+        if (String(r.error).indexOf('尚未安装') >= 0) switchView('status');
       }
     }).catch(function (e) {
       toast('启动失败: ' + e.message);
@@ -2863,25 +2849,6 @@ const PAGE_JS = `(function () {
         res.innerHTML = '<span class="pill info">CPU ' + d.process.cpu + '%</span>' +
           '<span class="pill info">内存 ' + d.process.memMB + ' MB</span>';
       } else if (res) { res.innerHTML = ''; }
-      if (document.querySelector('#monVersion')) document.querySelector('#monVersion').textContent = d.dsh.version || '未知';
-      if (document.querySelector('#monHome')) document.querySelector('#monHome').textContent = d.dsh.home;
-      if (document.querySelector('#monProfiles')) {
-        document.querySelector('#monProfiles').textContent = (d.dsh.profiles || []).join('、') || '(无)';
-      }
-      if (document.querySelector('#monSettings')) document.querySelector('#monSettings').textContent = (d.settings || []).join('\\n');
-      var sl = document.querySelector('#monSessions');
-      if (sl) {
-        sl.innerHTML = (d.sessions || []).length
-          ? d.sessions.map(function (x) {
-            return '<div class="plugin-row"><div class="plugin-info">' +
-              '<div class="plugin-name" style="font-weight:500">' + x.name + '</div>' +
-              '<div class="plugin-meta">' + fmtRelative(x.at) + ' · ' + fmtSize(x.size) + '</div>' +
-              '</div></div>';
-          }).join('')
-          : '<span class="muted">暂无会话记录</span>';
-      }
-      var st = document.querySelector('#monStorage');
-      if (st) st.textContent = 'DSH 数据目录: ' + d.storage.dshHomeMB + ' MB · 启动器数据: ' + d.storage.dataDirMB + ' MB';
     }).catch(function () {});
   }
   function fmtUp(sec) {
@@ -3165,8 +3132,6 @@ const PAGE_JS = `(function () {
       '</div>' + btns + '</div>';
   }
   function renderDiscover(d) {
-    $('#trendingList').innerHTML = d.trending.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
-    $('#newestList').innerHTML = d.newest.slice(0, 8).map(function (i) { return pluginRowHtml(i, false); }).join('');
     $('#marketList').innerHTML = d.trending.concat(d.newest).map(function (i) { return pluginRowHtml(i, true); }).join('');
     $('#uiList').innerHTML = d.uiThemes.length
       ? d.uiThemes.map(function (i) { return pluginRowHtml(i, true); }).join('')
@@ -3176,8 +3141,10 @@ const PAGE_JS = `(function () {
         return '<a class="hub-chip" href="' + h.url + '" target="_blank">' + h.name + '<span class="muted">' + h.desc + '</span></a>';
       }).join('');
     }
-    $('#dshLatest').textContent = d.dsh.latest ? ('最新 ' + d.dsh.latest) : '';
-    $('#dshLatestMeta').textContent = d.dsh.at ? ('最近更新 ' + d.dsh.at) : (d.dsh.name || '官方仓库动态');
+    var dl = $('#dshLatestLine');
+    if (dl) dl.textContent = d.dsh.latest
+      ? ('最新 ' + d.dsh.latest + (d.dsh.at ? ' · 更新于 ' + d.dsh.at : ''))
+      : (d.dsh.name || '官方仓库动态');
     if (d.catalogError) {
       $('#marketList').innerHTML = '<span class="muted">目录获取失败: ' + d.catalogError + '</span>';
     }
@@ -3236,9 +3203,18 @@ const PAGE_JS = `(function () {
   }
   function loadDiscover(force) {
     return api('/api/discover' + (force ? '?force=1' : '')).then(renderDiscover).catch(function (e) {
-      $('#trendingList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+      $('#marketList').innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
     });
   }
+  // 扩展页 tab 切换
+  document.querySelectorAll('.feed-tab[data-xt]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.feed-tab[data-xt]').forEach(function (x) { x.classList.toggle('active', x === b); });
+      $('#xtPlugins').hidden = b.dataset.xt !== 'plugins';
+      $('#xtSkills').hidden = b.dataset.xt !== 'skills';
+      $('#xtThemes').hidden = b.dataset.xt !== 'themes';
+    });
+  });
   $('#btnRefreshMarket').addEventListener('click', function () {
     toast('刷新目录…');
     loadDiscover(true).then(function () { toast('目录已刷新'); });
@@ -3708,7 +3684,7 @@ const PAGE_JS = `(function () {
     if (e.target === this) this.hidden = true;
   });
   $('#btnBackPlugin').addEventListener('click', function () {
-    switchView('market');
+    switchView('xt');
   });
   $('#btnRefreshLog').addEventListener('click', loadLog);
   $('#btnClearLog').addEventListener('click', function () {
@@ -3716,6 +3692,13 @@ const PAGE_JS = `(function () {
   });
   $('#btnRecheck').addEventListener('click', function () {
     loadEnv().then(function () { toast('检测完成'); });
+  });
+  $('#btnReinstall').addEventListener('click', function () {
+    switchView('status');
+    loadEnv().then(function () {
+      var ia = $('#installArea');
+      if (ia) ia.hidden = false;
+    });
   });
   $('#btnInstall').addEventListener('click', function () {
     api('/api/install', {
