@@ -192,7 +192,7 @@
       <div class="card" id="kbInfoCard">
         <div class="card-title">AnythingLLM · 本地知识库</div>
         <div class="row" style="flex-wrap:wrap;gap:8px" id="kbStats"><span class="muted">加载中…</span></div>
-        <div class="muted" style="font-size:12px;margin-top:8px">AnythingLLM 运行在本机 <span id="kbUrlText">http://localhost:3001</span>。嵌入页面仅供本机管理,若无法显示请点「打开知识库」在新窗口使用。</div>
+        <div class="muted" style="font-size:12px;margin-top:8px">AnythingLLM 运行在本机 <span id="kbUrlText">http://127.0.0.1:3001</span>(显式 IPv4,勿用裸 localhost)。嵌入页面仅供本机管理,若无法显示请点「打开知识库」在新窗口使用。</div>
       </div>
       <div class="card" style="padding:8px;flex:1">
         <div style="position:relative;width:100%;height:calc(100vh - 330px);min-height:420px">

@@ -1558,8 +1558,12 @@
   var kbInstalling = false;
   var kbFrameLoaded = false;
   var kbPollTimer = null;
+  var kbBaseUrl = 'http://127.0.0.1:3001';
   function renderKb(st) {
     if (!st) return;
+    if (st.url) kbBaseUrl = st.url;
+    var urlText = $('#kbUrlText');
+    if (urlText) urlText.textContent = kbBaseUrl;
     var dot = $('#kbDot');
     if (dot) dot.className = 'dot ' + (st.running ? 'running' : (kbInstalling ? 'starting' : 'stopped'));
     var state = $('#kbStateText');
@@ -1620,14 +1624,14 @@
   });
   $('#btnKbOpen').addEventListener('click', function () {
     api('/api/kb/open', { method: 'POST' }).then(function () { toast('已在外部窗口打开'); }).catch(function () {
-      window.open('http://localhost:3001', '_blank');
+      window.open(kbBaseUrl, '_blank');
     });
   });
   document.querySelector('.nav-item[data-view="kb"]').addEventListener('click', function () {
     if (!kbFrameLoaded) {
       kbFrameLoaded = true;
       var frame = $('#kbFrame');
-      if (frame) frame.src = 'http://localhost:3001';
+      if (frame) frame.src = kbBaseUrl;
     }
   });
 

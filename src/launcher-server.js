@@ -1487,7 +1487,9 @@ const KB_DATA_DIRS = {
 let kbJob = null;
 function kbUrl() {
   const kb = config.kb || {};
-  return String(kb.url || 'http://localhost:3001');
+  const legacy = String(kb.url || 'http://localhost:3001');
+  if (legacy === 'http://localhost:3001') return 'http://127.0.0.1:3001';
+  return legacy;
 }
 async function kbStatus() {
   const url = kbUrl();
@@ -1572,7 +1574,7 @@ async function runKbInstall() {
     job.percent = 100;
     job.message = '完成';
     job.done = true;
-    push('✓ 完成。知识库服务默认运行在 http://localhost:3001');
+    push('✓ 完成。知识库服务运行在 http://127.0.0.1:3001(显式 IPv4,勿用裸 localhost)');
   } catch (e) {
     job.error = String(e && e.message || e);
     push('✗ 失败: ' + job.error);
@@ -3204,7 +3206,7 @@ const PAGE_HTML = `<div class="app">
       <div class="card" id="kbInfoCard">
         <div class="card-title">AnythingLLM · 本地知识库</div>
         <div class="row" style="flex-wrap:wrap;gap:8px" id="kbStats"><span class="muted">加载中…</span></div>
-        <div class="muted" style="font-size:12px;margin-top:8px">AnythingLLM 运行在本机 <span id="kbUrlText">http://localhost:3001</span>。嵌入页面仅供本机管理,若无法显示请点「打开知识库」在新窗口使用。</div>
+        <div class="muted" style="font-size:12px;margin-top:8px">AnythingLLM 运行在本机 <span id="kbUrlText">http://127.0.0.1:3001</span>(显式 IPv4,勿用裸 localhost)。嵌入页面仅供本机管理,若无法显示请点「打开知识库」在新窗口使用。</div>
       </div>
       <div class="card" style="padding:8px;flex:1">
         <div style="position:relative;width:100%;height:calc(100vh - 330px);min-height:420px">
@@ -5031,8 +5033,12 @@ const PAGE_JS = `(function () {
   var kbInstalling = false;
   var kbFrameLoaded = false;
   var kbPollTimer = null;
+  var kbBaseUrl = 'http://127.0.0.1:3001';
   function renderKb(st) {
     if (!st) return;
+    if (st.url) kbBaseUrl = st.url;
+    var urlText = $('#kbUrlText');
+    if (urlText) urlText.textContent = kbBaseUrl;
     var dot = $('#kbDot');
     if (dot) dot.className = 'dot ' + (st.running ? 'running' : (kbInstalling ? 'starting' : 'stopped'));
     var state = $('#kbStateText');
@@ -5093,14 +5099,14 @@ const PAGE_JS = `(function () {
   });
   $('#btnKbOpen').addEventListener('click', function () {
     api('/api/kb/open', { method: 'POST' }).then(function () { toast('已在外部窗口打开'); }).catch(function () {
-      window.open('http://localhost:3001', '_blank');
+      window.open(kbBaseUrl, '_blank');
     });
   });
   document.querySelector('.nav-item[data-view="kb"]').addEventListener('click', function () {
     if (!kbFrameLoaded) {
       kbFrameLoaded = true;
       var frame = $('#kbFrame');
-      if (frame) frame.src = 'http://localhost:3001';
+      if (frame) frame.src = kbBaseUrl;
     }
   });
 
