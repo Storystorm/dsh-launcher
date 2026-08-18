@@ -1472,6 +1472,240 @@ async function getMonitor() {
   };
 }
 
+// ================================================================ 知识库集成(AnythingLLM)
+const KB_DATA_DIRS = {
+  anythingllm: process.platform === 'darwin'
+    ? path.join(HOME, 'Library', 'Application Support', 'anythingllm-desktop')
+    : process.platform === 'win32'
+      ? path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), 'anythingllm-desktop')
+      : path.join(HOME, '.config', 'anythingllm-desktop'),
+  weknora: path.join(HOME, 'weknora'),
+};
+let kbJob = null;
+function kbUrl() {
+  const kb = config.kb || {};
+  return String(kb.url || 'http://localhost:3001');
+}
+async function kbStatus() {
+  const url = kbUrl();
+  let up = false;
+  try { up = await httpUp(url, 2000); } catch (e) {}
+  const dir = KB_DATA_DIRS.anythingllm;
+  return {
+    url: url,
+    running: up,
+    provider: (config.kb && config.kb.provider) || 'anythingllm',
+    dataDir: dir,
+    dataExists: fs.existsSync(dir),
+    dataSizeMB: fs.existsSync(dir) ? Math.round(dirSize(dir) / 1048576) : 0,
+    installed: fs.existsSync('/Applications/AnythingLLM.app') || fs.existsSync(dir),
+  };
+}
+async function kbLatestRelease() {
+  const data = await new Promise((resolve, reject) => {
+    https.get('https://api.github.com/repos/Mintplex-Labs/anything-llm/releases/latest', { headers: GH_AUTH_HEADERS }, res => {
+      let b = '';
+      res.on('data', c => { b += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error('HTTP ' + res.statusCode));
+        try { resolve(JSON.parse(b)); } catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+  const assets = data.assets || [];
+  let asset = null;
+  if (process.platform === 'darwin') {
+    const isArm = process.arch === 'arm64';
+    asset = assets.find(a => a.name.endsWith('.dmg') && /silicon|arm64/i.test(a.name) === isArm) || assets.find(a => a.name.endsWith('.dmg'));
+  } else if (process.platform === 'win32') {
+    asset = assets.find(a => a.name.endsWith('.exe'));
+  } else {
+    asset = assets.find(a => a.name.endsWith('.AppImage'));
+  }
+  return { tag: data.tag_name, asset: asset ? { name: asset.name, url: asset.browser_download_url, size: asset.size } : null };
+}
+function kbJobSnapshot() {
+  if (!kbJob) return { running: false };
+  return { running: kbJob.running, message: kbJob.message, percent: kbJob.percent, done: kbJob.done, error: kbJob.error, log: kbJob.log.slice(-40) };
+}
+async function runKbInstall() {
+  if (kbJob && kbJob.running) return;
+  const job = { running: true, message: '准备…', percent: 0, done: false, error: null, log: [] };
+  kbJob = job;
+  const push = (m) => { job.log.push(m); if (job.log.length > 200) job.log.shift(); };
+  try {
+    const rel = await kbLatestRelease();
+    if (!rel.asset) throw new Error('未找到适用于当前平台的安装包');
+    job.message = '下载 AnythingLLM ' + rel.tag;
+    push('下载: ' + rel.asset.name + ' (' + Math.round(rel.asset.size / 1048576) + ' MB)');
+    const dest = path.join(os.tmpdir(), rel.asset.name);
+    await downloadFile(rel.asset.url, dest, p => { job.percent = Math.round(p * 80); });
+    job.percent = 85;
+    if (process.platform === 'darwin') {
+      job.message = '安装到应用程序…';
+      push('挂载 dmg 并复制到 /Applications…');
+      const out = spawnSync('/usr/bin/hdiutil', ['attach', dest, '-nobrowse', '-readonly'], { encoding: 'utf8' });
+      const vol = String(out.stdout || '').split('\t').pop().split('\n')[0].trim();
+      let appSrc = vol + '/AnythingLLM.app';
+      if (!fs.existsSync(appSrc)) appSrc = vol + '/AnythingLLMDesktop.app';
+      if (!fs.existsSync(appSrc)) throw new Error('dmg 中未找到 AnythingLLM 应用');
+      spawnSync('/usr/bin/ditto', [appSrc, '/Applications/AnythingLLM.app']);
+      spawnSync('/usr/bin/hdiutil', ['detach', vol]);
+      push('已安装到 /Applications/AnythingLLM.app');
+      spawnSync('/usr/bin/open', ['/Applications/AnythingLLM.app']);
+      push('已启动,等待其本地服务就绪…');
+    } else if (process.platform === 'win32') {
+      spawnSync('cmd', ['/c', 'start', '', dest]);
+      push('已启动安装程序,请按向导完成安装');
+    } else {
+      const app = path.join(HOME, 'Applications');
+      fs.mkdirSync(app, { recursive: true });
+      const target = path.join(app, 'AnythingLLM.AppImage');
+      fs.copyFileSync(dest, target);
+      fs.chmodSync(target, 0o755);
+      spawnSync(target, [], { detached: true, stdio: 'ignore' }).unref();
+      push('已安装并启动(AppImage)');
+    }
+    job.percent = 100;
+    job.message = '完成';
+    job.done = true;
+    push('✓ 完成。知识库服务默认运行在 http://localhost:3001');
+  } catch (e) {
+    job.error = String(e && e.message || e);
+    push('✗ 失败: ' + job.error);
+  }
+  job.running = false;
+}
+function openKb() {
+  if (process.platform === 'darwin' && fs.existsSync('/Applications/AnythingLLM.app')) {
+    spawnSync('/usr/bin/open', ['/Applications/AnythingLLM.app']);
+    return true;
+  }
+  openUrl(kbUrl());
+  return true;
+}
+
+// ================================================================ 对话记忆管理
+function sessionsDir() { return path.join(DSH_HOME_DIR, 'sessions'); }
+async function memoryList() {
+  let sessions = [];
+  try {
+    const r = await dshRpc('session.list', {});
+    const items = (r.result && r.result.value && r.result.value.items) || [];
+    const sd = sessionsDir();
+    sessions = items.map(it => {
+      let size = 0;
+      try {
+        for (const f of fs.readdirSync(sd)) {
+          if (f.indexOf(it.sessionId) === 0) {
+            size += fs.statSync(path.join(sd, f)).size;
+          }
+        }
+      } catch (e) {}
+      const pj = (it.projections && it.projections.values) || {};
+      return {
+        sessionId: it.sessionId,
+        title: pj.title || it.sessionId.slice(0, 10),
+        updatedAt: it.updatedAt,
+        running: it.running,
+        cwd: it.cwd || '',
+        turns: (pj.sessionStats && pj.sessionStats.turns) || 0,
+        size: size,
+      };
+    });
+  } catch (e) {}
+  let backups = [];
+  try {
+    backups = fs.readdirSync(DSH_HOME_DIR).filter(n => n.indexOf('sessions-backup') === 0 || n.indexOf('backup') === 0)
+      .map(n => {
+        const fp = path.join(DSH_HOME_DIR, n);
+        const s = fs.statSync(fp);
+        return { name: n, at: s.mtime.toISOString(), size: s.isDirectory() ? dirSize(fp) : s.size };
+      }).sort((a, b) => b.at.localeCompare(a.at));
+  } catch (e) {}
+  let totalMB = 0;
+  try { totalMB = Math.round(dirSize(sessionsDir()) / 1048576); } catch (e) {}
+  return { sessions: sessions, backups: backups, home: DSH_HOME_DIR, totalMB: totalMB };
+}
+function memoryBackup() {
+  const src = sessionsDir();
+  const dst = path.join(DSH_HOME_DIR, 'sessions-backup-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + Date.now().toString(36).slice(-4));
+  fs.mkdirSync(dst, { recursive: true });
+  const parts = [];
+  if (fs.existsSync(src)) {
+    fs.cpSync(src, dst, { recursive: true });
+    parts.push('dsh-sessions');
+  } else {
+    fs.writeFileSync(path.join(dst, 'sessions-missing.txt'), '备份时会话目录不存在: ' + src);
+  }
+  for (const key of Object.keys(KB_DATA_DIRS)) {
+    const d = KB_DATA_DIRS[key];
+    if (fs.existsSync(d)) {
+      fs.cpSync(d, path.join(dst, 'kb-' + key), { recursive: true });
+      parts.push('kb-' + key);
+    }
+  }
+  return { dst: dst, parts: parts };
+}
+function memoryDelete(sessionId) {
+  if (!/^[A-Za-z0-9-]{8,}$/.test(sessionId)) throw new Error('无效的 sessionId');
+  const sd = sessionsDir();
+  let removed = 0;
+  for (const f of fs.readdirSync(sd)) {
+    if (f.indexOf(sessionId) === 0) {
+      fs.rmSync(path.join(sd, f), { recursive: true, force: true });
+      removed++;
+    }
+  }
+  return removed;
+}
+function memoryRestore(name) {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error('无效的备份名');
+  const src = path.join(DSH_HOME_DIR, name);
+  if (!fs.existsSync(src)) throw new Error('备份不存在');
+  const dst = sessionsDir();
+  fs.mkdirSync(dst, { recursive: true });
+  let copied = 0;
+  for (const f of fs.readdirSync(src)) {
+    if (f.indexOf('kb-') === 0) continue;
+    const from = path.join(src, f);
+    const to = path.join(dst, f);
+    if (!fs.existsSync(to)) {
+      fs.cpSync(from, to, { recursive: true });
+      copied++;
+    }
+  }
+  for (const key of Object.keys(KB_DATA_DIRS)) {
+    const fromDir = path.join(src, 'kb-' + key);
+    if (!fs.existsSync(fromDir)) continue;
+    const toDir = KB_DATA_DIRS[key];
+    fs.mkdirSync(toDir, { recursive: true });
+    for (const f of fs.readdirSync(fromDir)) {
+      const from = path.join(fromDir, f);
+      const to = path.join(toDir, f);
+      if (!fs.existsSync(to)) {
+        fs.cpSync(from, to, { recursive: true });
+        copied++;
+      }
+    }
+  }
+  return copied;
+}
+function memoryExport(sessionId) {
+  const sd = sessionsDir();
+  const files = [];
+  for (const f of fs.readdirSync(sd)) {
+    if (f.indexOf(sessionId) === 0) {
+      const fp = path.join(sd, f);
+      const st = fs.statSync(fp);
+      if (st.isFile() && st.size < 20 * 1024 * 1024) {
+        files.push({ name: f, size: st.size, content: fs.readFileSync(fp, 'utf8') });
+      }
+    }
+  }
+  return files;
+}
+
 // ================================================================ 社区时间线(GitHub Issues 存储)
 const COMMUNITY_REPO = 'Storystorm/dsh-community';
 
@@ -1770,6 +2004,10 @@ a:hover{text-decoration:underline}
 .auth-row:hover{background:var(--bg-hover)}
 .hub-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border-l2);border-radius:16px;font-size:12px;color:var(--label-primary);text-decoration:none;background:var(--bg-layer-1)}
 .hub-chip:hover{background:var(--bg-hover)}
+.ico{width:16px;height:16px;flex:none;display:inline-flex}
+.ico svg{width:100%;height:100%}
+.icon-btn{width:28px;padding:0}
+.icon-btn svg{width:15px;height:15px}
 .feed-tabs{display:flex;gap:4px;padding:10px 16px 0;border-bottom:1px solid var(--border-l1)}
 .feed-tab{padding:6px 12px;font-size:13px;color:var(--label-secondary);background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;font-family:inherit}
 .feed-tab.active{color:var(--label-primary);font-weight:600;border-bottom-color:var(--brand-strong)}
@@ -1803,6 +2041,8 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item" data-view="install"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.5v8M4.8 5.7L8 9l3.2-3.3"/><path d="M2.5 11.5v1.5a1 1 0 001 1h9a1 1 0 001-1v-1.5"/></svg></span>安装</button>
       <button class="nav-item active" data-view="status"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg></span>状态</button>
       <button class="nav-item" data-view="chat"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>对话</button>
+      <button class="nav-item" data-view="memory"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11z"/><path d="M8 5.5v3l2 1.2"/></svg></span>记忆</button>
+<button class="nav-item" data-view="kb"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="8" cy="3.2" rx="5.5" ry="2.1"/><path d="M2.5 3.2v9.6c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1V3.2"/><path d="M2.5 8c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1"/></svg></span>知识库</button>
       <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>监控</button>
       <button class="nav-item" data-view="settings"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="5.5" cy="4.5" r="1.5" fill="currentColor" stroke="none"/><circle cx="10.5" cy="8" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.5" cy="11.5" r="1.5" fill="currentColor" stroke="none"/></svg></span>设置</button>
       <button class="nav-item" data-view="community"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>社区</button>
@@ -1866,15 +2106,60 @@ const PAGE_HTML = `<div class="app">
         <div style="margin-top:4px;font-size:14px"><a id="statusUrl" href="#" target="_blank">—</a></div>
       </div>
     </section>
-    <section class="view" id="view-chat" hidden style="max-width:none">
-      <h2 class="title" style="display:flex;align-items:center;gap:10px">对话
-        <span class="muted" style="font-size:12px;font-weight:400">官方 DSH 界面(会话 + 工作区),原样嵌入</span>
-        <span style="flex:1"></span>
-        <button class="btn outline sm" id="btnChatReload">刷新</button>
-        <a class="btn outline sm" id="chatOpenLink" href="#" target="_blank" style="text-decoration:none">新窗口打开</a>
-      </h2>
-      <div class="muted" id="chatHint" style="font-size:12px;margin-bottom:8px">正在加载 DSH 界面…若未启动服务请先到「状态」页启动</div>
-      <iframe id="chatFrame" src="about:blank" style="width:100%;height:calc(100vh - 160px);border:1px solid var(--border-l2);border-radius:12px;background:#fff"></iframe>
+    <section class="view" id="view-chat" hidden style="max-width:none;position:relative;padding-top:2px">
+      <div style="position:absolute;top:0;right:0;display:flex;gap:6px;z-index:5">
+        <button class="btn outline sm icon-btn" id="btnChatReload" title="刷新"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13.5 8a5.5 5.5 0 11-1.63-3.9M13.5 2.8v2.6h-2.6"/></svg></button>
+        <a class="btn outline sm icon-btn" id="chatOpenLink" href="#" target="_blank" title="新窗口打开"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M7 9l6-6M9 3h4v4M13 9v3.5a1.5 1.5 0 01-1.5 1.5h-8A1.5 1.5 0 012 12.5v-8A1.5 1.5 0 013.5 3H7"/></svg></a>
+      </div>
+      <iframe id="chatFrame" src="about:blank" style="width:100%;height:calc(100vh - 44px);border:1px solid var(--border-l2);border-radius:12px;background:#fff"></iframe>
+    </section>
+    <section class="view" id="view-memory" hidden>
+      <h2 class="title">对话记忆</h2>
+      <div class="card">
+        <div class="card-title">概览</div>
+        <div class="row" style="flex-wrap:wrap;gap:8px" id="memStats"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary sm" id="btnMemBackup">一键备份全部记忆</button>
+          <span class="muted" style="font-size:11px" id="memBackupHint"></span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">会话列表</div>
+        <div id="memList" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">备份记录</div>
+        <div id="memBackups" class="plugin-list"><span class="muted">暂无备份</span></div>
+      </div>
+    </section>
+    <section class="view" id="view-kb" hidden>
+      <div class="row" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <h2 class="title" style="margin:0">知识库</h2>
+        <div class="row" style="gap:8px;align-items:center">
+          <span class="dot stopped" id="kbDot"></span>
+          <span class="muted" id="kbStateText" style="font-size:12px">检测中…</span>
+          <button class="btn outline sm" id="btnKbOpen" disabled>打开知识库</button>
+          <button class="btn primary sm" id="btnKbInstall">一键安装</button>
+        </div>
+      </div>
+      <div class="card" id="kbInstallCard" hidden>
+        <div class="card-title">安装进度</div>
+        <div class="progress"><div class="progress-bar" id="kbBar"></div></div>
+        <div class="row" style="margin-top:8px">
+          <span id="kbJobMsg" class="muted" style="font-size:12px">准备…</span>
+        </div>
+        <pre id="kbLog" style="display:none;margin-top:8px;max-height:120px;overflow:auto;font-size:11px;background:var(--bg-layer-2);padding:8px;border-radius:8px"></pre>
+      </div>
+      <div class="card" id="kbInfoCard">
+        <div class="card-title">AnythingLLM · 本地知识库</div>
+        <div class="row" style="flex-wrap:wrap;gap:8px" id="kbStats"><span class="muted">加载中…</span></div>
+        <div class="muted" style="font-size:12px;margin-top:8px">AnythingLLM 运行在本机 <span id="kbUrlText">http://localhost:3001</span>。嵌入页面仅供本机管理,若无法显示请点「打开知识库」在新窗口使用。</div>
+      </div>
+      <div class="card" style="padding:8px;flex:1">
+        <div style="position:relative;width:100%;height:calc(100vh - 330px);min-height:420px">
+          <iframe id="kbFrame" src="about:blank" style="width:100%;height:100%;border:1px solid var(--border-l2);border-radius:12px;background:#fff"></iframe>
+        </div>
+      </div>
     </section>
     <section class="view" id="view-monitor" hidden>
       <h2 class="title">监控 · 遥控台</h2>
@@ -1973,7 +2258,7 @@ const PAGE_HTML = `<div class="app">
         <div id="imgPreviews" style="margin-top:4px"></div>
         <div class="row" style="margin-top:8px;justify-content:space-between">
           <div class="row">
-            <button class="btn outline sm" id="btnPickImg">📷 图片</button>
+            <button class="btn outline sm" id="btnPickImg"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="1.5" y="3" width="13" height="10" rx="2"/><circle cx="5.5" cy="6.5" r="1.4"/><path d="M3 11.5l3.2-3.2 2.3 2.3 2-2L13 11.5"/></svg></span>图片</button>
             <input type="file" id="postImg" accept="image/*" multiple style="display:none">
             <span class="muted" style="font-size:11px" id="postAuthHint"></span>
           </div>
@@ -2133,7 +2418,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'chat', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'chat', 'memory', 'kb', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -2197,9 +2482,6 @@ const PAGE_JS = `(function () {
       if (frame && !frame.dataset.loaded) {
         frame.dataset.loaded = '1';
         frame.src = '/dsh/';
-        frame.addEventListener('load', function () {
-          $('#chatHint').textContent = '已加载官方 DSH 界面(由黑鲸启动器托管)';
-        });
       }
       var link = $('#chatOpenLink');
       if (link) link.href = chatUrl;
@@ -2375,7 +2657,7 @@ const PAGE_JS = `(function () {
     return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
   function tagHtml(s) {
-    var out = escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
+    var out = escHtml(s).replace(/#([\\u4e00-\\u9fa5\\w-]+)/g, '<span class="feed-tag">#$1</span>');
     out = out.replace(/!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)/g, '<img class="feed-img" src="$2" alt="$1">');
     return out;
   }
@@ -2483,6 +2765,88 @@ const PAGE_JS = `(function () {
     var parts = v.split('/');
     return { provider: parts[0] || '', model: parts.slice(1).join('/') || '' };
   }
+  // ---- 对话记忆管理 ----
+  function fmtSizeMem(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+    return b + ' B';
+  }
+  function loadMemory() {
+    return api('/api/memory').then(function (d) {
+      var st = document.querySelector('#memStats');
+      if (st) {
+        st.innerHTML = '<span class="pill info">' + (d.sessions || []).length + ' 个会话</span>' +
+          '<span class="pill info">共 ' + d.totalMB + ' MB</span>' +
+          '<span class="pill idle">存储于 ' + d.home + '</span>';
+        api('/api/kb').then(function (kb) {
+          var st2 = document.querySelector('#memStats');
+          if (st2) st2.insertAdjacentHTML('beforeend', '<span class="pill ' + (kb.running ? 'ok' : 'idle') + '">知识库 ' + (kb.running ? '运行中' : '未运行') + '</span>');
+        }).catch(function () {});
+      }
+      var el = document.querySelector('#memList');
+      if (el) {
+        el.innerHTML = (d.sessions || []).length ? d.sessions.map(function (s) {
+          return '<div class="plugin-row"><div class="plugin-info">' +
+            '<div class="plugin-name" style="font-weight:500">' + (s.running ? '● ' : '○ ') + escHtml(s.title) +
+            ' <span class="pill idle" style="margin-left:6px">' + s.turns + ' 轮</span></div>' +
+            '<div class="plugin-meta">' + fmtRelative(s.updatedAt) + ' · ' + fmtSizeMem(s.size) + (s.cwd ? ' · ' + escHtml(s.cwd) : '') + '</div>' +
+            '</div>' +
+            '<button class="btn outline sm" data-export="' + s.sessionId + '">导出</button>' +
+            '<button class="btn outline sm" data-del="' + s.sessionId + '"' + (s.running ? ' disabled title="运行中不可删"' : '') + '>删除</button>' +
+            '</div>';
+        }).join('') : '<span class="muted">暂无会话记忆</span>';
+        document.querySelectorAll('#memList [data-export]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var url = '/api/memory/export?sessionId=' + encodeURIComponent(b.dataset.export);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'session-' + b.dataset.export.slice(0, 8) + '.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            toast('已导出');
+          });
+        });
+        document.querySelectorAll('#memList [data-del]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            if (!confirm('删除该会话的全部记忆?此操作不可恢复(建议先备份)。')) return;
+            api('/api/memory/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: b.dataset.del }),
+            }).then(function (r) {
+              toast('已删除 ' + r.removed + ' 个记忆文件');
+              loadMemory();
+            }).catch(function (e) { toast(e.message); });
+          });
+        });
+      }
+      var bl = document.querySelector('#memBackups');
+      if (bl) {
+        bl.innerHTML = (d.backups || []).length ? d.backups.map(function (x) {
+          return '<div class="plugin-row"><div class="plugin-info">' +
+            '<div class="plugin-name" style="font-weight:500">' + escHtml(x.name) + '</div>' +
+            '<div class="plugin-meta">' + fmtRelative(x.at) + ' · ' + fmtSizeMem(x.size) + '</div>' +
+            '</div>' +
+            '<button class="btn outline sm" data-restore="' + escHtml(x.name) + '">恢复</button>' +
+            '</div>';
+        }).join('') : '<span class="muted">暂无备份</span>';
+        document.querySelectorAll('#memBackups [data-restore]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            if (!confirm('把备份「' + b.dataset.restore + '」合并恢复回会话目录?(已存在的会话文件不覆盖)')) return;
+            api('/api/memory/restore', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: b.dataset.restore }),
+            }).then(function (r) {
+              toast('已恢复 ' + r.copied + ' 个文件');
+              loadMemory();
+            }).catch(function (e) { toast(e.message); });
+          });
+        });
+      }
+    }).catch(function () {});
+  }
   function loadMonitor() {
     return api('/api/monitor').then(function (d) {
       var s = d.service;
@@ -2553,8 +2917,8 @@ const PAGE_JS = `(function () {
       '<div class="feed-body">' + tagHtml(p.body) + '</div>' +
       (imgCount(p.body) ? '<div class="plugin-meta">' + imgCount(p.body) + ' 图</div>' : '') +
       '<div class="feed-actions">' +
-      '<button class="feed-act" data-like="' + p.number + '">👍 ' + p.likes + '</button>' +
-      '<span class="feed-act">💬 ' + p.comments + '</span>' +
+      '<button class="feed-act" data-like="' + p.number + '"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 7h2.8v7H2.5zM5.3 14h6.9a1.5 1.5 0 001.4-1.8l-.8-4A1.5 1.5 0 0011.4 7H9.2l.6-2.4A1.8 1.8 0 008 2.6L5.3 6.4z"/></svg></span> ' + p.likes + '</button>' +
+      '<span class="feed-act"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span> ' + p.comments + '</span>' +
       '</div></div>';
   }
   function loadFeed(tab) {
@@ -2614,8 +2978,8 @@ const PAGE_JS = `(function () {
       '</div>' +
       '<div class="feed-body" style="margin-top:10px">' + tagHtml(p.body) + '</div>' +
       '<div class="feed-actions">' +
-      '<button class="feed-act" id="pdLike">👍 ' + p.likes + '</button>' +
-      '<span class="feed-act">💬 ' + (d.comments || []).length + '</span>' +
+      '<button class="feed-act" id="pdLike"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 7h2.8v7H2.5zM5.3 14h6.9a1.5 1.5 0 001.4-1.8l-.8-4A1.5 1.5 0 0011.4 7H9.2l.6-2.4A1.8 1.8 0 008 2.6L5.3 6.4z"/></svg></span> ' + p.likes + '</button>' +
+      '<span class="feed-act"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span> ' + (d.comments || []).length + '</span>' +
       '</div>' +
       '</div>';
     h += '<div class="card">' +
@@ -3250,6 +3614,89 @@ const PAGE_JS = `(function () {
       });
     }).catch(function () {});
   }
+  // ---- 知识库 ----
+  var kbInstalling = false;
+  var kbFrameLoaded = false;
+  var kbPollTimer = null;
+  function renderKb(st) {
+    if (!st) return;
+    var dot = $('#kbDot');
+    if (dot) dot.className = 'dot ' + (st.running ? 'running' : (kbInstalling ? 'starting' : 'stopped'));
+    var state = $('#kbStateText');
+    if (state) state.textContent = st.running ? ('运行中 · ' + st.url) : (st.installed ? '已安装,未运行' : '未安装');
+    var openBtn = $('#btnKbOpen');
+    if (openBtn) openBtn.disabled = !st.running;
+    var stats = $('#kbStats');
+    if (stats) {
+      stats.innerHTML = '<span class="pill ' + (st.running ? 'ok' : 'idle') + '">服务 ' + (st.running ? '运行中' : '未运行') + '</span>' +
+        '<span class="pill idle">' + st.provider + '</span>' +
+        '<span class="pill info">数据目录 ' + (st.dataExists ? st.dataSizeMB + ' MB' : '尚无数据') + '</span>';
+    }
+  }
+  function loadKb() {
+    return api('/api/kb').then(function (st) {
+      renderKb(st);
+      if (!kbInstalling) {
+        var card = $('#kbInstallCard');
+        if (card) card.hidden = true;
+        var btn = $('#btnKbInstall');
+        if (btn) { btn.disabled = false; btn.textContent = st.installed ? '重新安装' : '一键安装'; }
+      }
+    }).catch(function () {});
+  }
+  function kbPoll() {
+    api('/api/kb/install/status').then(function (snap) {
+      var bar = $('#kbBar');
+      if (bar) bar.style.width = (snap.percent || 0) + '%';
+      var msg = $('#kbJobMsg');
+      if (msg) msg.textContent = snap.message || '';
+      var log = $('#kbLog');
+      if (log && snap.log && snap.log.length) {
+        log.style.display = 'block';
+        log.textContent = snap.log.join('\\n');
+        log.scrollTop = log.scrollHeight;
+      }
+      if (snap.done || snap.error || !snap.running) {
+        clearInterval(kbPollTimer);
+        kbPollTimer = null;
+        kbInstalling = false;
+        if (snap.error) toast('知识库安装失败: ' + snap.error);
+        else if (snap.done) toast('知识库安装完成,正在启动…');
+        loadKb();
+      }
+    }).catch(function () {});
+  }
+  $('#btnKbInstall').addEventListener('click', function () {
+    api('/api/kb/install', { method: 'POST' }).then(function () {
+      kbInstalling = true;
+      $('#btnKbInstall').disabled = true;
+      $('#kbInstallCard').hidden = false;
+      var bar = $('#kbBar'); if (bar) bar.style.width = '0%';
+      var msg = $('#kbJobMsg'); if (msg) msg.textContent = '准备下载…';
+      var log = $('#kbLog'); if (log) { log.style.display = 'none'; log.textContent = ''; }
+      kbPoll();
+      kbPollTimer = setInterval(kbPoll, 800);
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnKbOpen').addEventListener('click', function () {
+    api('/api/kb/open', { method: 'POST' }).then(function () { toast('已在外部窗口打开'); }).catch(function () {
+      window.open('http://localhost:3001', '_blank');
+    });
+  });
+  document.querySelector('.nav-item[data-view="kb"]').addEventListener('click', function () {
+    if (!kbFrameLoaded) {
+      kbFrameLoaded = true;
+      var frame = $('#kbFrame');
+      if (frame) frame.src = 'http://localhost:3001';
+    }
+  });
+
+  $('#btnMemBackup').addEventListener('click', function () {
+    api('/api/memory/backup', { method: 'POST' }).then(function (r) {
+      toast('备份完成: ' + r.name + ((r.parts && r.parts.length > 1) ? '(含知识库数据)' : ''));
+      loadMemory();
+    }).catch(function (e) { toast(e.message); });
+  });
   $('#btnChatReload').addEventListener('click', function () {
     var frame = $('#chatFrame');
     if (frame) frame.src = frame.src;
@@ -3304,6 +3751,8 @@ const PAGE_JS = `(function () {
   loadDshSessions();
   loadDshWorkspace();
   loadDshModels();
+  loadMemory();
+  loadKb();
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);
@@ -3407,11 +3856,66 @@ const server = http.createServer(async (req, res) => {
       if (!ok) return send(res, 502, 'proxy error', 'text/plain');
       return;
     }
+    // 兜底:DSH 前端动态加载的插件包与未在面板注册的 API,反代到 DSH 后端
+    if (p.startsWith('/plugins/') || p.startsWith('/trio/')) {
+      const ok = await pipeProxy(req, res, u.pathname + u.search);
+      if (!ok) return send(res, 502, 'proxy error', 'text/plain');
+      return;
+    }
     if (p === '/' && m === 'GET') {
       return send(res, 200, PAGE, 'text/html; charset=utf-8');
     }
     if (p === '/api/status' && m === 'GET') return sendJSON(res, 200, await getStatus());
     if (p === '/api/monitor' && m === 'GET') return sendJSON(res, 200, await getMonitor());
+    if (p === '/api/memory' && m === 'GET') {
+      try { return sendJSON(res, 200, await memoryList()); }
+      catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/memory/backup' && m === 'POST') {
+      try {
+        const r = memoryBackup();
+        return sendJSON(res, 200, { ok: true, name: path.basename(r.dst), parts: r.parts });
+      }
+      catch (e) { return sendJSON(res, 500, { error: e.message }); }
+    }
+    if (p === '/api/memory/restore' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, { ok: true, copied: memoryRestore(String(body.name || '')) }); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/memory/delete' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, { ok: true, removed: memoryDelete(String(body.sessionId || '')) }); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/memory/export' && m === 'GET') {
+      const sessionId = String(u.searchParams.get('sessionId') || '');
+      try {
+        const files = memoryExport(sessionId);
+        return send(res, 200, JSON.stringify({ sessionId: sessionId, exportedAt: new Date().toISOString(), files: files }, null, 2), 'application/json; charset=utf-8');
+      } catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    // 知识库(AnythingLLM)
+    if (p === '/api/kb' && m === 'GET') {
+      try { return sendJSON(res, 200, await kbStatus()); }
+      catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/kb/install-info' && m === 'GET') {
+      try { return sendJSON(res, 200, await kbLatestRelease()); }
+      catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/kb/install' && m === 'POST') {
+      if (kbJob && kbJob.running) return sendJSON(res, 409, { error: '安装进行中' });
+      runKbInstall();
+      return sendJSON(res, 202, { ok: true });
+    }
+    if (p === '/api/kb/install/status' && m === 'GET') {
+      return sendJSON(res, 200, kbJobSnapshot());
+    }
+    if (p === '/api/kb/open' && m === 'POST') {
+      try { return sendJSON(res, 200, { ok: openKb() }); }
+      catch (e) { return sendJSON(res, 500, { error: e.message }); }
+    }
     if (p === '/api/dsh/sessions' && m === 'GET') {
       try {
         const r = await dshRpc('session.list', {});
@@ -3508,6 +4012,12 @@ const server = http.createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true });
     }
     if (p === '/api/market/install/status' && m === 'GET') return sendJSON(res, 200, pluginSnapshot());
+    // 面板未注册的 /api/* 反代到 DSH(官方前端同源托管用)
+    if (p.startsWith('/api/') && !p.startsWith('/api/auth') && !p.startsWith('/api/reviews') && !p.startsWith('/api/posts') && !p.startsWith('/api/install') && !p.startsWith('/api/update') && !p.startsWith('/api/config') && !p.startsWith('/api/status') && !p.startsWith('/api/env') && !p.startsWith('/api/monitor') && !p.startsWith('/api/plugin-') && !p.startsWith('/api/discover') && !p.startsWith('/api/skills') && !p.startsWith('/api/market') && !p.startsWith('/api/dsh') && !p.startsWith('/api/log') && !p.startsWith('/api/group')) {
+      const ok = await pipeProxy(req, res, u.pathname + u.search);
+      if (!ok) return send(res, 502, 'proxy error', 'text/plain');
+      return;
+    }
     if (p === '/api/plugin-preview' && m === 'GET') {
       const repo = String(u.searchParams.get('repo') || '');
       if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) return sendJSON(res, 400, { error: 'bad repo' });

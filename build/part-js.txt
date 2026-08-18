@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['install', 'status', 'chat', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
+  var views = ['install', 'status', 'chat', 'memory', 'kb', 'monitor', 'settings', 'community', 'discover', 'market', 'skills', 'ui', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -64,9 +64,6 @@
       if (frame && !frame.dataset.loaded) {
         frame.dataset.loaded = '1';
         frame.src = '/dsh/';
-        frame.addEventListener('load', function () {
-          $('#chatHint').textContent = '已加载官方 DSH 界面(由黑鲸启动器托管)';
-        });
       }
       var link = $('#chatOpenLink');
       if (link) link.href = chatUrl;
@@ -159,7 +156,7 @@
     $('#installPercent').textContent = (snap.percent || 0) + '%';
     $('#progressBar').style.width = (snap.percent || 0) + '%';
     var box = $('#installLog');
-    box.textContent = (snap.log || []).join('\\n');
+    box.textContent = (snap.log || []).join('\n');
     box.scrollTop = box.scrollHeight;
     $('#btnInstall').disabled = !!snap.running;
     $('#btnCancelInstall').disabled = !snap.running;
@@ -243,11 +240,11 @@
   }
   function tagHtml(s) {
     var out = escHtml(s).replace(/#([\u4e00-\u9fa5\w-]+)/g, '<span class="feed-tag">#$1</span>');
-    out = out.replace(/!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)/g, '<img class="feed-img" src="$2" alt="$1">');
+    out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, '<img class="feed-img" src="$2" alt="$1">');
     return out;
   }
   function imgCount(s) {
-    var m = String(s || '').match(/!\\[[^\\]]*\\]\\([^)\\s]+\\)/g);
+    var m = String(s || '').match(/!\[[^\]]*\]\([^)\s]+\)/g);
     return m ? m.length : 0;
   }
   // ---- 监控看板 ----
@@ -350,6 +347,88 @@
     var parts = v.split('/');
     return { provider: parts[0] || '', model: parts.slice(1).join('/') || '' };
   }
+  // ---- 对话记忆管理 ----
+  function fmtSizeMem(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+    return b + ' B';
+  }
+  function loadMemory() {
+    return api('/api/memory').then(function (d) {
+      var st = document.querySelector('#memStats');
+      if (st) {
+        st.innerHTML = '<span class="pill info">' + (d.sessions || []).length + ' 个会话</span>' +
+          '<span class="pill info">共 ' + d.totalMB + ' MB</span>' +
+          '<span class="pill idle">存储于 ' + d.home + '</span>';
+        api('/api/kb').then(function (kb) {
+          var st2 = document.querySelector('#memStats');
+          if (st2) st2.insertAdjacentHTML('beforeend', '<span class="pill ' + (kb.running ? 'ok' : 'idle') + '">知识库 ' + (kb.running ? '运行中' : '未运行') + '</span>');
+        }).catch(function () {});
+      }
+      var el = document.querySelector('#memList');
+      if (el) {
+        el.innerHTML = (d.sessions || []).length ? d.sessions.map(function (s) {
+          return '<div class="plugin-row"><div class="plugin-info">' +
+            '<div class="plugin-name" style="font-weight:500">' + (s.running ? '● ' : '○ ') + escHtml(s.title) +
+            ' <span class="pill idle" style="margin-left:6px">' + s.turns + ' 轮</span></div>' +
+            '<div class="plugin-meta">' + fmtRelative(s.updatedAt) + ' · ' + fmtSizeMem(s.size) + (s.cwd ? ' · ' + escHtml(s.cwd) : '') + '</div>' +
+            '</div>' +
+            '<button class="btn outline sm" data-export="' + s.sessionId + '">导出</button>' +
+            '<button class="btn outline sm" data-del="' + s.sessionId + '"' + (s.running ? ' disabled title="运行中不可删"' : '') + '>删除</button>' +
+            '</div>';
+        }).join('') : '<span class="muted">暂无会话记忆</span>';
+        document.querySelectorAll('#memList [data-export]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var url = '/api/memory/export?sessionId=' + encodeURIComponent(b.dataset.export);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'session-' + b.dataset.export.slice(0, 8) + '.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            toast('已导出');
+          });
+        });
+        document.querySelectorAll('#memList [data-del]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            if (!confirm('删除该会话的全部记忆?此操作不可恢复(建议先备份)。')) return;
+            api('/api/memory/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sessionId: b.dataset.del }),
+            }).then(function (r) {
+              toast('已删除 ' + r.removed + ' 个记忆文件');
+              loadMemory();
+            }).catch(function (e) { toast(e.message); });
+          });
+        });
+      }
+      var bl = document.querySelector('#memBackups');
+      if (bl) {
+        bl.innerHTML = (d.backups || []).length ? d.backups.map(function (x) {
+          return '<div class="plugin-row"><div class="plugin-info">' +
+            '<div class="plugin-name" style="font-weight:500">' + escHtml(x.name) + '</div>' +
+            '<div class="plugin-meta">' + fmtRelative(x.at) + ' · ' + fmtSizeMem(x.size) + '</div>' +
+            '</div>' +
+            '<button class="btn outline sm" data-restore="' + escHtml(x.name) + '">恢复</button>' +
+            '</div>';
+        }).join('') : '<span class="muted">暂无备份</span>';
+        document.querySelectorAll('#memBackups [data-restore]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            if (!confirm('把备份「' + b.dataset.restore + '」合并恢复回会话目录?(已存在的会话文件不覆盖)')) return;
+            api('/api/memory/restore', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: b.dataset.restore }),
+            }).then(function (r) {
+              toast('已恢复 ' + r.copied + ' 个文件');
+              loadMemory();
+            }).catch(function (e) { toast(e.message); });
+          });
+        });
+      }
+    }).catch(function () {});
+  }
   function loadMonitor() {
     return api('/api/monitor').then(function (d) {
       var s = d.service;
@@ -371,7 +450,7 @@
       if (document.querySelector('#monProfiles')) {
         document.querySelector('#monProfiles').textContent = (d.dsh.profiles || []).join('、') || '(无)';
       }
-      if (document.querySelector('#monSettings')) document.querySelector('#monSettings').textContent = (d.settings || []).join('\\n');
+      if (document.querySelector('#monSettings')) document.querySelector('#monSettings').textContent = (d.settings || []).join('\n');
       var sl = document.querySelector('#monSessions');
       if (sl) {
         sl.innerHTML = (d.sessions || []).length
@@ -420,8 +499,8 @@
       '<div class="feed-body">' + tagHtml(p.body) + '</div>' +
       (imgCount(p.body) ? '<div class="plugin-meta">' + imgCount(p.body) + ' 图</div>' : '') +
       '<div class="feed-actions">' +
-      '<button class="feed-act" data-like="' + p.number + '">👍 ' + p.likes + '</button>' +
-      '<span class="feed-act">💬 ' + p.comments + '</span>' +
+      '<button class="feed-act" data-like="' + p.number + '"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 7h2.8v7H2.5zM5.3 14h6.9a1.5 1.5 0 001.4-1.8l-.8-4A1.5 1.5 0 0011.4 7H9.2l.6-2.4A1.8 1.8 0 008 2.6L5.3 6.4z"/></svg></span> ' + p.likes + '</button>' +
+      '<span class="feed-act"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span> ' + p.comments + '</span>' +
       '</div></div>';
   }
   function loadFeed(tab) {
@@ -481,8 +560,8 @@
       '</div>' +
       '<div class="feed-body" style="margin-top:10px">' + tagHtml(p.body) + '</div>' +
       '<div class="feed-actions">' +
-      '<button class="feed-act" id="pdLike">👍 ' + p.likes + '</button>' +
-      '<span class="feed-act">💬 ' + (d.comments || []).length + '</span>' +
+      '<button class="feed-act" id="pdLike"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 7h2.8v7H2.5zM5.3 14h6.9a1.5 1.5 0 001.4-1.8l-.8-4A1.5 1.5 0 0011.4 7H9.2l.6-2.4A1.8 1.8 0 008 2.6L5.3 6.4z"/></svg></span> ' + p.likes + '</button>' +
+      '<span class="feed-act"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span> ' + (d.comments || []).length + '</span>' +
       '</div>' +
       '</div>';
     h += '<div class="card">' +
@@ -572,7 +651,7 @@
     var text = document.querySelector('#postText').value.trim();
     if (!text && pendingImages.length === 0) { toast('写点什么再发布'); return; }
     if (pendingImages.length) {
-      text = text + (text ? '\\n' : '') + pendingImages.map(function (u) { return '\\n![图片](' + u + ')'; }).join('');
+      text = text + (text ? '\n' : '') + pendingImages.map(function (u) { return '\n![图片](' + u + ')'; }).join('');
     }
     api('/api/posts', {
       method: 'POST',
@@ -699,7 +778,7 @@
     document.querySelectorAll('.plugin-row [data-pkg]').forEach(function (b) {
       b.addEventListener('click', function () {
         var pkg = b.dataset.pkg;
-        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\\n\\n确定安装?安装完成后需重启 dsh 服务生效。')) return;
+        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\n\n确定安装?安装完成后需重启 dsh 服务生效。')) return;
         b.disabled = true;
         b.textContent = '安装中…';
         api('/api/market/install', {
@@ -725,7 +804,7 @@
     pluginPoll = setInterval(function () {
       api('/api/market/install/status').then(function (st) {
         var box = $('#pluginJobLog');
-        box.textContent = (st.log || []).join('\\n');
+        box.textContent = (st.log || []).join('\n');
         box.scrollTop = box.scrollHeight;
         if (!st.running) {
           clearInterval(pluginPoll);
@@ -924,7 +1003,7 @@
     if (ib) {
       ib.addEventListener('click', function () {
         var pkg = ib.dataset.pkg;
-        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\\n\\n确定安装?')) return;
+        if (!confirm('将执行: dsh plugin --profile web add ' + pkg + '\n\n确定安装?')) return;
         ib.disabled = true;
         ib.textContent = '安装中…';
         api('/api/market/install', {
@@ -1117,6 +1196,89 @@
       });
     }).catch(function () {});
   }
+  // ---- 知识库 ----
+  var kbInstalling = false;
+  var kbFrameLoaded = false;
+  var kbPollTimer = null;
+  function renderKb(st) {
+    if (!st) return;
+    var dot = $('#kbDot');
+    if (dot) dot.className = 'dot ' + (st.running ? 'running' : (kbInstalling ? 'starting' : 'stopped'));
+    var state = $('#kbStateText');
+    if (state) state.textContent = st.running ? ('运行中 · ' + st.url) : (st.installed ? '已安装,未运行' : '未安装');
+    var openBtn = $('#btnKbOpen');
+    if (openBtn) openBtn.disabled = !st.running;
+    var stats = $('#kbStats');
+    if (stats) {
+      stats.innerHTML = '<span class="pill ' + (st.running ? 'ok' : 'idle') + '">服务 ' + (st.running ? '运行中' : '未运行') + '</span>' +
+        '<span class="pill idle">' + st.provider + '</span>' +
+        '<span class="pill info">数据目录 ' + (st.dataExists ? st.dataSizeMB + ' MB' : '尚无数据') + '</span>';
+    }
+  }
+  function loadKb() {
+    return api('/api/kb').then(function (st) {
+      renderKb(st);
+      if (!kbInstalling) {
+        var card = $('#kbInstallCard');
+        if (card) card.hidden = true;
+        var btn = $('#btnKbInstall');
+        if (btn) { btn.disabled = false; btn.textContent = st.installed ? '重新安装' : '一键安装'; }
+      }
+    }).catch(function () {});
+  }
+  function kbPoll() {
+    api('/api/kb/install/status').then(function (snap) {
+      var bar = $('#kbBar');
+      if (bar) bar.style.width = (snap.percent || 0) + '%';
+      var msg = $('#kbJobMsg');
+      if (msg) msg.textContent = snap.message || '';
+      var log = $('#kbLog');
+      if (log && snap.log && snap.log.length) {
+        log.style.display = 'block';
+        log.textContent = snap.log.join('\n');
+        log.scrollTop = log.scrollHeight;
+      }
+      if (snap.done || snap.error || !snap.running) {
+        clearInterval(kbPollTimer);
+        kbPollTimer = null;
+        kbInstalling = false;
+        if (snap.error) toast('知识库安装失败: ' + snap.error);
+        else if (snap.done) toast('知识库安装完成,正在启动…');
+        loadKb();
+      }
+    }).catch(function () {});
+  }
+  $('#btnKbInstall').addEventListener('click', function () {
+    api('/api/kb/install', { method: 'POST' }).then(function () {
+      kbInstalling = true;
+      $('#btnKbInstall').disabled = true;
+      $('#kbInstallCard').hidden = false;
+      var bar = $('#kbBar'); if (bar) bar.style.width = '0%';
+      var msg = $('#kbJobMsg'); if (msg) msg.textContent = '准备下载…';
+      var log = $('#kbLog'); if (log) { log.style.display = 'none'; log.textContent = ''; }
+      kbPoll();
+      kbPollTimer = setInterval(kbPoll, 800);
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnKbOpen').addEventListener('click', function () {
+    api('/api/kb/open', { method: 'POST' }).then(function () { toast('已在外部窗口打开'); }).catch(function () {
+      window.open('http://localhost:3001', '_blank');
+    });
+  });
+  document.querySelector('.nav-item[data-view="kb"]').addEventListener('click', function () {
+    if (!kbFrameLoaded) {
+      kbFrameLoaded = true;
+      var frame = $('#kbFrame');
+      if (frame) frame.src = 'http://localhost:3001';
+    }
+  });
+
+  $('#btnMemBackup').addEventListener('click', function () {
+    api('/api/memory/backup', { method: 'POST' }).then(function (r) {
+      toast('备份完成: ' + r.name + ((r.parts && r.parts.length > 1) ? '(含知识库数据)' : ''));
+      loadMemory();
+    }).catch(function (e) { toast(e.message); });
+  });
   $('#btnChatReload').addEventListener('click', function () {
     var frame = $('#chatFrame');
     if (frame) frame.src = frame.src;
@@ -1171,6 +1333,8 @@
   loadDshSessions();
   loadDshWorkspace();
   loadDshModels();
+  loadMemory();
+  loadKb();
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);
