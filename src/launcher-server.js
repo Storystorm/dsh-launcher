@@ -1742,7 +1742,7 @@ function loadToolsCfg() {
   const p = TOOLS_CFG_PATH();
   if (!fs.existsSync(p)) {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, TOOLS_TEMPLATE);
+    fs.writeFileSync(p, String(TOOLS_TEMPLATE).replace(/\\n/g, '\n'));
   }
   const parsed = yamlMini.parse(fs.readFileSync(p, 'utf8'));
   toolsCfg = {
