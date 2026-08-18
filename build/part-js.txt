@@ -1,6 +1,6 @@
 (function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['status', 'chat', 'monitor', 'tools', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
+  var views = ['status', 'chat', 'monitor', 'tools', 'usage', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -1329,6 +1329,161 @@
     if (!confirm('停止全部工具?')) return;
     api('/api/tools/stop-all', { method: 'POST' }).then(function (r) { toast('已停止 ' + (r.stopped || []).length + ' 个工具'); loadTools(); }).catch(function (e) { toast(e.message); });
   });
+  // ---- 接入与用量 ----
+  function fmtTok(n) {
+    n = Number(n) || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+  function loadUsage() {
+    api('/api/usage').then(renderUsage).catch(function (e) {
+      var t = document.querySelector('#usageTotals');
+      if (t) t.innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  function renderUsage(u) {
+    if (!u) return;
+    var meta = document.querySelector('#usageMeta');
+    if (meta) {
+      meta.textContent = (u.modelId || '未配置模型') + ' · 输入 ' + (u.price ? u.price.input : '?') + ' / 缓存 ' + (u.price ? u.price.cache : '?') + ' / 输出 ' + (u.price ? u.price.output : '?') + ' 元/M' + (u.cached ? ' · 缓存快照(DSH 未运行)' : '') + (u.error ? ' · ' + u.error : '');
+    }
+    var tt = document.querySelector('#usageTotals');
+    if (tt && u.totals) {
+      tt.innerHTML = '<span class="pill info">输入 ' + fmtTok(u.totals.input) + '</span>' +
+        '<span class="pill info">缓存读 ' + fmtTok(u.totals.cacheRead) + '</span>' +
+        '<span class="pill info">输出 ' + fmtTok(u.totals.output) + '</span>' +
+        '<span class="pill ok">费用 ¥' + (u.totals.cost || 0).toFixed(2) + '</span>' +
+        '<span class="pill idle">' + u.totals.turns + ' 轮</span>' +
+        (u.comfy && u.comfy.available && u.comfy.running ? '<span class="pill info">ComfyUI 产出 ' + u.comfy.prompts + ' 次 / ' + u.comfy.images + ' 张图</span>' : '') +
+        (u.cached ? '<span class="pill bad">DSH 未运行,显示上次快照</span>' : '');
+    }
+    var bars = document.querySelector('#usageBars');
+    if (bars && u.days && u.days.length) {
+      var days = u.days.slice(-14);
+      var max = 0;
+      days.forEach(function (d) { if (d.output > max) max = d.output; });
+      bars.innerHTML = days.map(function (d) {
+        var h = max ? Math.max(6, Math.round((d.output / max) * 110)) : 6;
+        return '<div style="flex:none;width:38px;display:flex;flex-direction:column;align-items:center;gap:4px" title="' + d.day + ' · 输出 ' + fmtTok(d.output) + ' · ¥' + (d.cost || 0).toFixed(2) + '">' +
+          '<div style="height:' + h + 'px;width:18px;border-radius:4px 4px 2px 2px;background:var(--brand);opacity:.85"></div>' +
+          '<div class="muted" style="font-size:10px">' + d.day.slice(5) + '</div>' +
+          '</div>';
+      }).join('');
+    }
+    var sl = document.querySelector('#usageSessions');
+    if (sl && u.sessions) {
+      sl.innerHTML = u.sessions.length ? u.sessions.slice(0, 60).map(function (s) {
+        return '<div class="plugin-row"><div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:500;font-size:13px">' + escHtml(s.title) + '</div>' +
+          '<div class="plugin-meta">' + s.day + ' · ' + s.turns + ' 轮</div>' +
+          '</div>' +
+          '<div class="row" style="gap:8px;font-size:11px;color:var(--label-secondary)">' +
+          '<span>入 ' + fmtTok(s.input) + '</span><span>缓存 ' + fmtTok(s.cacheRead) + '</span><span>出 ' + fmtTok(s.output) + '</span>' +
+          '<span class="pill ok">¥' + (s.cost || 0).toFixed(2) + '</span>' +
+          '</div></div>';
+      }).join('') : '<span class="muted">暂无会话(DSH 未运行或没有数据)</span>';
+    }
+  }
+  var apiCfgCache = null;
+  function loadApiConfig() {
+    return api('/api/api-config').then(function (c) {
+      apiCfgCache = c;
+      renderApiConfig(c);
+      return c;
+    }).catch(function () {});
+  }
+  function providerRow(name, p) {
+    p = p || { apiKeyEnv: '', models: [] };
+    var models = (p.models || []).map(function (m) { return m.id; }).join(', ');
+    return '<div class="plugin-row api-provider-row" data-pname="' + escHtml(name) + '" style="align-items:center;flex-wrap:wrap;gap:6px">' +
+      '<input class="api-pname" value="' + escHtml(name) + '" placeholder="供应商名" style="width:120px">' +
+      '<input class="api-penv" value="' + escHtml(p.apiKeyEnv || '') + '" placeholder="密钥环境变量" style="width:150px">' +
+      '<input class="api-pkey" type="password" value="' + escHtml((apiCfgCache && apiCfgCache.apiKeys && apiCfgCache.apiKeys[p.apiKeyEnv]) || '') + '" placeholder="密钥(留空不覆盖)" style="width:190px">' +
+      '<input class="api-pmodels" value="' + escHtml(models) + '" placeholder="模型 id,逗号分隔" style="flex:1;min-width:180px">' +
+      '<button class="btn outline sm" data-apidel="' + escHtml(name) + '">删除</button>' +
+      '</div>';
+  }
+  function renderApiConfig(c) {
+    if (!c) return;
+    $('#apiProvider').value = (c.defaultModel && c.defaultModel.provider) || '';
+    $('#apiModel').value = (c.defaultModel && c.defaultModel.model) || '';
+    $('#comfyUrl').value = (c.comfy && c.comfy.url) || '';
+    $('#comfyKey').value = (c.comfy && c.comfy.apiKey) || '';
+    var names = Object.keys(c.providers || {});
+    var el = document.querySelector('#apiProviders');
+    if (el) el.innerHTML = names.length ? names.map(function (n) { return providerRow(n, c.providers[n]); }).join('') : '<span class="muted">暂无供应商,点下方按钮添加</span>';
+    var prices = [];
+    for (var id of Object.keys(c.prices || {})) {
+      var p = c.prices[id];
+      prices.push(id + ' | ' + (p.input || 0) + ' | ' + (p.cache || 0) + ' | ' + (p.output || 0));
+    }
+    $('#apiPrices').value = prices.join('\n');
+  }
+  function collectApiBody() {
+    var providers = {};
+    document.querySelectorAll('.api-provider-row').forEach(function (row) {
+      var name = (row.querySelector('.api-pname').value || '').trim();
+      if (!name) return;
+      var env = (row.querySelector('.api-penv').value || '').trim();
+      var models = (row.querySelector('.api-pmodels').value || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      var prev = (apiCfgCache && apiCfgCache.providers && apiCfgCache.providers[name]) || null;
+      var prevModels = {};
+      if (prev) prev.models.forEach(function (m) { prevModels[m.id] = m; });
+      providers[name] = {
+        apiKeyEnv: env || (name.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY'),
+        models: models.map(function (id) {
+          return prevModels[id] || { id: id, name: id, contextWindow: 131072, maxTokens: 32768 };
+        }),
+      };
+    });
+    var apiKeys = {};
+    document.querySelectorAll('.api-provider-row').forEach(function (row) {
+      var env = (row.querySelector('.api-penv').value || '').trim();
+      var key = (row.querySelector('.api-pkey').value || '').trim();
+      if (env && key) apiKeys[env] = key;
+    });
+    var prices = {};
+    $('#apiPrices').value.split('\n').forEach(function (line) {
+      var parts = line.split('|').map(function (x) { return x.trim(); });
+      if (parts.length >= 4 && parts[0]) {
+        prices[parts[0]] = { input: Number(parts[1]) || 0, cache: Number(parts[2]) || 0, output: Number(parts[3]) || 0 };
+      }
+    });
+    return {
+      defaultModel: { provider: $('#apiProvider').value.trim(), model: $('#apiModel').value.trim() },
+      providers: providers,
+      apiKeys: apiKeys,
+      prices: prices,
+      comfy: { url: $('#comfyUrl').value.trim(), apiKey: $('#comfyKey').value.trim() },
+    };
+  }
+  $('#btnApiSave').addEventListener('click', function () {
+    api('/api/api-config/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectApiBody()),
+    }).then(function () {
+      toast('接入配置已保存并写入 DSH settings.yaml');
+      loadApiConfig();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnApiAddProvider').addEventListener('click', function () {
+    var el = document.querySelector('#apiProviders');
+    if (el) el.insertAdjacentHTML('beforeend', providerRow('新供应商', { apiKeyEnv: '', models: [] }));
+  });
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t !== document && !(t.getAttribute && t.getAttribute('data-apidel'))) t = t.parentNode;
+    if (t && t !== document) {
+      if (!confirm('删除供应商 ' + t.getAttribute('data-apidel') + '?')) return;
+      t.closest('.api-provider-row').remove();
+      toast('已从界面移除;保存后生效');
+    }
+  });
+  $('#btnUsageRefresh').addEventListener('click', function () {
+    api('/api/usage/refresh', { method: 'POST' }).then(function (u) { renderUsage(u); toast('已刷新'); }).catch(function (e) { toast(e.message); });
+  });
   // ---- 远程遥控(小程序) ----
   function renderRelay(st) {
     if (!st) return;
@@ -1547,8 +1702,11 @@
   loadKb();
   loadRelay();
   loadTools();
+  loadApiConfig();
+  loadUsage();
   setInterval(loadRelay, 3000);
   setInterval(loadTools, 3000);
+  setInterval(loadUsage, 60000);
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);

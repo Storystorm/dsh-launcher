@@ -286,7 +286,7 @@ async function startDsh() {
     child = spawn(run.node, [run.bin, 'web', '--host', config.host, '--port', String(config.port)], {
       detached: true,
       stdio: ['ignore', logFd, logFd],
-      env: Object.assign({}, process.env, { DSH_HOME: DSH_HOME_DIR }),
+      env: Object.assign({}, process.env, apiEnv()),
       cwd: HOME,
     });
   } catch (e) {
@@ -1905,7 +1905,7 @@ async function toolStart(id) {
   try {
     child = spawn(t.command, args, {
       cwd: cwd,
-      env: Object.assign({}, process.env, t.env || {}),
+      env: Object.assign({}, process.env, t.env || {}, toolApiEnv(t.id)),
       detached: !IS_WIN,
       stdio: ['ignore', logFd, logFd],
       windowsHide: true,
@@ -2009,6 +2009,272 @@ function reconcilePids() {
   saveToolsState();
 }
 
+// ================================================================ API 接入与用量管理
+const USAGE_PATH = () => path.join(DATA_DIR, 'usage.json');
+const DSH_SETTINGS_PATH = () => path.join(DSH_HOME_DIR, 'settings.yaml');
+const API_BLOCK_BEGIN = '# >>> dsh-launcher-api(由黑鲸启动器自动生成,请勿手改)';
+const API_BLOCK_END = '# <<< dsh-launcher-api';
+function dshApiCfg() { return config.dshApi || {}; }
+function defaultPrices() {
+  return {
+    'deepseek-v4-pro': { input: 2, cache: 0.2, output: 3 },
+    'deepseek-chat': { input: 2, cache: 0.2, output: 3 },
+  };
+}
+function priceFor(modelId) {
+  const prices = Object.assign({}, defaultPrices(), dshApiCfg().prices || {});
+  const key = String(modelId || '');
+  return prices[key] || prices[key.split('/').pop()] || { input: 2, cache: 0.2, output: 3 };
+}
+function readDshSettingsYaml() {
+  try { return fs.readFileSync(DSH_SETTINGS_PATH(), 'utf8'); } catch (e) { return ''; }
+}
+function parseDshProviders() {
+  try {
+    const y = yamlMini.parse(readDshSettingsYaml());
+    const pv = y['llm-pi-ai'] && y['llm-pi-ai'].providers;
+    if (!pv || typeof pv !== 'object') return {};
+    const out = {};
+    for (const name of Object.keys(pv)) {
+      const p = pv[name] || {};
+      out[name] = {
+        apiKeyEnv: String(p.apiKeyEnv || ''),
+        models: (p.models || []).map(m => ({
+          id: String(m.id || ''),
+          name: String(m.name || m.id || ''),
+          contextWindow: Number(m.contextWindow) || 0,
+          maxTokens: Number(m.maxTokens) || 0,
+        })),
+      };
+    }
+    return out;
+  } catch (e) { return {}; }
+}
+function dshDefaultModel() {
+  try {
+    const y = yamlMini.parse(readDshSettingsYaml());
+    const m = y['agent-default-model'];
+    if (m && m.provider) return { provider: String(m.provider), model: String(m.model || ''), reasoningEffort: String(m.reasoningEffort || '') };
+  } catch (e) {}
+  return { provider: '', model: '' };
+}
+function apiConfigSnapshot() {
+  const cfg = dshApiCfg();
+  return {
+    defaultModel: cfg.defaultModel || dshDefaultModel(),
+    providers: parseDshProviders(),
+    prices: Object.assign({}, defaultPrices(), cfg.prices || {}),
+    apiKeys: cfg.apiKeys || {},
+    comfy: cfg.comfy || { url: 'http://127.0.0.1:8188', apiKey: '' },
+    settingsPath: DSH_SETTINGS_PATH(),
+  };
+}
+function stripTopSection(text, name) {
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const isTop = /^\S/.test(line) && !line.startsWith('#');
+    if (isTop && line.startsWith(name + ':')) {
+      i++;
+      while (i < lines.length && !(/^\S/.test(lines[i]) && !lines[i].startsWith('#'))) i++;
+      while (out.length && out[out.length - 1].trim() === '') out.pop();
+      i--;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+function providerBlock(name, p, indent) {
+  const L = [];
+  L.push(indent + name + ':');
+  L.push(indent + '  apiKeyEnv: ' + (p.apiKeyEnv || name.toUpperCase() + '_API_KEY'));
+  if (p.models && p.models.length) {
+    L.push(indent + '  models:');
+    for (const m of p.models) {
+      L.push(indent + '    - id: ' + m.id);
+      L.push(indent + '      name: ' + yq(m.name || m.id));
+      if (m.contextWindow) L.push(indent + '      contextWindow: ' + m.contextWindow);
+      if (m.maxTokens) L.push(indent + '      maxTokens: ' + m.maxTokens);
+    }
+  }
+  return L.join('\n');
+}
+function buildApiBlock(cfg) {
+  const dm = cfg.defaultModel || { provider: 'deepseek-official', model: 'deepseek-v4-pro' };
+  const L = [];
+  L.push('agent-default-model:');
+  L.push('  provider: ' + (dm.provider || 'deepseek-official'));
+  L.push('  model: ' + (dm.model || 'deepseek-v4-pro'));
+  if (dm.reasoningEffort) L.push('  reasoningEffort: ' + dm.reasoningEffort);
+  L.push('llm-pi-ai:');
+  L.push('  providers:');
+  for (const name of Object.keys(cfg.providers || {})) {
+    L.push(providerBlock(name, cfg.providers[name], '    '));
+  }
+  return L.join('\n');
+}
+function saveApiConfig(body) {
+  const cfg = dshApiCfg();
+  const next = {
+    defaultModel: Object.assign({}, cfg.defaultModel, body.defaultModel || {}),
+    providers: body.providers ? Object.assign({}, body.providers) : Object.assign({}, parseDshProviders(), cfg.providers || {}),
+    prices: Object.assign({}, cfg.prices, body.prices || {}),
+    apiKeys: Object.assign({}, cfg.apiKeys, body.apiKeys || {}),
+    comfy: Object.assign({}, cfg.comfy, body.comfy || {}),
+  };
+  if (next.defaultModel && !next.defaultModel.provider) delete next.defaultModel.provider;
+  config.dshApi = next;
+  config.dshApi.providers = next.providers;
+  saveJSON(CONFIG_PATH, config);
+  // 写回 DSH settings.yaml:标记块文本合并,剥离原有两个顶级段
+  let text = readDshSettingsYaml();
+  const bi = text.indexOf(API_BLOCK_BEGIN);
+  const ei = text.indexOf(API_BLOCK_END);
+  if (bi >= 0 && ei > bi) text = text.slice(0, bi) + text.slice(ei + API_BLOCK_END.length);
+  text = stripTopSection(text, 'agent-default-model');
+  text = stripTopSection(text, 'llm-pi-ai');
+  text = text.replace(/\s*$/, '');
+  const block = '\n' + API_BLOCK_BEGIN + '\n' + buildApiBlock(next) + '\n' + API_BLOCK_END + '\n';
+  fs.writeFileSync(DSH_SETTINGS_PATH(), text + block);
+  return next;
+}
+function apiEnv() {
+  const cfg = dshApiCfg();
+  const env = { DSH_HOME: DSH_HOME_DIR };
+  for (const k of Object.keys(cfg.apiKeys || {})) {
+    if (k && cfg.apiKeys[k]) env[k] = String(cfg.apiKeys[k]);
+  }
+  if (cfg.comfy && cfg.comfy.url) env.COMFYUI_URL = String(cfg.comfy.url);
+  if (cfg.comfy && cfg.comfy.apiKey) env.COMFYUI_API_KEY = String(cfg.comfy.apiKey);
+  return env;
+}
+function toolApiEnv(toolId) {
+  const env = {};
+  if (String(toolId || '').indexOf('comfyui') === 0) {
+    const c = dshApiCfg().comfy || {};
+    if (c.url) env.COMFYUI_URL = String(c.url);
+    if (c.apiKey) env.COMFYUI_API_KEY = String(c.apiKey);
+  }
+  return env;
+}
+function httpGetJson(urlStr, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr);
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u, { timeout: timeoutMs || 6000 }, res => {
+      let b = '';
+      res.on('data', c => { b += c; if (b.length > 5e6) req.destroy(); });
+      res.on('end', () => {
+        try { resolve(JSON.parse(b)); } catch (e) { reject(new Error('JSON 解析失败')); }
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('超时')));
+    req.on('error', reject);
+  });
+}
+async function usageScan(force) {
+  const st = await getStatus();
+  const cfg = dshApiCfg();
+  const modelId = String((cfg.defaultModel && cfg.defaultModel.model) || dshDefaultModel().model || '');
+  const price = priceFor(modelId);
+  const out = {
+    dshRunning: st.running,
+    scannedAt: Date.now(),
+    cached: false,
+    modelId: modelId,
+    price: price,
+    sessions: [],
+    days: [],
+    totals: { input: 0, cacheRead: 0, output: 0, cost: 0, turns: 0 },
+    comfy: await comfyUsage(),
+  };
+  if (!st.running) {
+    const cached = loadJSON(USAGE_PATH(), null);
+    if (cached && cached.sessions && !force) {
+      cached.dshRunning = false;
+      cached.cached = true;
+      return cached;
+    }
+    return out;
+  }
+  try {
+    const r = await dshRpc('session.list', {});
+    const items = (r.result && r.result.value && r.result.value.items) || [];
+    const days = {};
+    for (const it of items) {
+      const v = (it.projections && it.projections.values) || {};
+      const tu = v.tokenUsage || {};
+      const input = Number(tu.uncachedInputTokens) || 0;
+      const cache = Number(tu.cacheReadTokens) || 0;
+      const output = Number(tu.outputTokens) || 0;
+      const cost = (input * price.input + cache * price.cache + output * price.output) / 1e6;
+      const day = new Date(it.updatedAt).toISOString().slice(0, 10);
+      const turns = (v.sessionStats && v.sessionStats.turns) || 0;
+      out.totals.input += input;
+      out.totals.cacheRead += cache;
+      out.totals.output += output;
+      out.totals.cost += cost;
+      out.totals.turns += turns;
+      out.sessions.push({
+        sessionId: it.sessionId,
+        title: v.title || String(it.sessionId).slice(0, 10),
+        day: day,
+        updatedAt: it.updatedAt,
+        turns: turns,
+        input: input,
+        cacheRead: cache,
+        output: output,
+        cost: Math.round(cost * 10000) / 10000,
+      });
+      const d = days[day] || (days[day] = { day: day, input: 0, cacheRead: 0, output: 0, cost: 0, turns: 0 });
+      d.input += input; d.cacheRead += cache; d.output += output; d.cost += cost; d.turns += turns;
+    }
+    out.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    out.days = Object.keys(days).sort().map(k => days[k]);
+    out.totals.cost = Math.round(out.totals.cost * 10000) / 10000;
+    saveJSON(USAGE_PATH(), out);
+  } catch (e) {
+    out.error = String(e && e.message || e);
+  }
+  return out;
+}
+async function comfyUsage() {
+  const t = toolsCfg.tools.find(x => x.id === 'comfyui');
+  if (!t) return { available: false };
+  const st = toolsState['comfyui'] || {};
+  if (st.status !== 'running') return { available: true, running: false };
+  const c = dshApiCfg().comfy || {};
+  let base = c.url || '';
+  if (!base && t.health) {
+    const h = subst(t.health, st.port || t.port, t);
+    try { base = new URL(h).origin; } catch (e) {}
+  }
+  if (!base) return { available: true, running: true, error: '未配置 ComfyUI 地址' };
+  try {
+    const hist = await httpGetJson(base.replace(/\/$/, '') + '/history', 5000);
+    let prompts = 0, images = 0;
+    for (const k of Object.keys(hist || {})) {
+      prompts++;
+      const entry = hist[k] || {};
+      for (const nk of Object.keys(entry.outputs || {})) {
+        const o = entry.outputs[nk] || {};
+        if (Array.isArray(o.images)) images += o.images.length;
+      }
+    }
+    return { available: true, running: true, prompts: prompts, images: images };
+  } catch (e) {
+    return { available: true, running: true, error: String(e && e.message || e) };
+  }
+}
+function usageCsv(u) {
+  const L = ['sessionId,标题,日期,轮次,输入token,缓存读token,输出token,费用(元)'];
+  for (const s of (u.sessions || [])) {
+    L.push([s.sessionId, String(s.title || '').replace(/[,\"]/g, ' '), s.day, s.turns, s.input, s.cacheRead, s.output, s.cost].join(','));
+  }
+  return L.join('\n');
+}
 // ================================================================ 远程遥控(小程序中继)
 let relayClient = { running: false, online: false, pairCode: null, pairToken: null, error: null };
 function relayCfg() { return config.relay || {}; }
@@ -2758,6 +3024,7 @@ const PAGE_HTML = `<div class="app">
       <button class="nav-item" data-view="chat"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10a1 1 0 011 1v5.5a1 1 0 01-1 1H8.2l-3.2 2.3V11H3a1 1 0 01-1-1V4.5a1 1 0 011-1z"/></svg></span>对话</button>
       <button class="nav-item" data-view="monitor"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 13h12M4 13V9m4 4V5m4 8V2"/></svg></span>遥控台</button>
       <button class="nav-item" data-view="tools"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 4.5h4V4a1 1 0 011-1h2a1 1 0 011 1v.5h4a1 1 0 011 1V11a1 1 0 01-1 1H3a1 1 0 01-1-1V5.5a1 1 0 011-1z"/><path d="M2 8h12M6 8v2.5"/></svg></span>工具</button>
+      <button class="nav-item" data-view="usage"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 13.5V7M6 13.5V4.5M9.5 13.5v-5M13 13.5V2"/><path d="M2.5 7L6 4.5l3.5 4L13 2"/></svg></span>用量</button>
       <button class="nav-item" data-view="memory"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11z"/><path d="M8 5.5v3l2 1.2"/></svg></span>记忆</button>
       <button class="nav-item" data-view="kb"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><ellipse cx="8" cy="3.2" rx="5.5" ry="2.1"/><path d="M2.5 3.2v9.6c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1V3.2"/><path d="M2.5 8c0 1.2 2.5 2.1 5.5 2.1s5.5-.9 5.5-2.1"/></svg></span>知识库</button>
       <button class="nav-item" data-view="xt"><span class="ico"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.2l5 2.6v6.4L8 13.8l-5-2.6V4.8z"/><path d="M8 8V2.2M3 4.8l5 2.6 5-2.6M8 8v5.8"/></svg></span>扩展</button>
@@ -2856,6 +3123,47 @@ const PAGE_HTML = `<div class="app">
         <pre class="mon-pre" id="toolLogBody" style="max-height:420px;overflow:auto;margin-top:8px;white-space:pre-wrap">加载中…</pre>
       </div>
     </div>
+    <section class="view" id="view-usage" hidden>
+      <div class="row" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <h2 class="title" style="margin:0">接入与用量</h2>
+        <div class="row" style="gap:8px">
+          <button class="btn outline sm" id="btnUsageRefresh">刷新</button>
+          <a class="btn outline sm" href="/api/usage/export" style="text-decoration:none">导出 CSV</a>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">API 接入与计价</div>
+        <div class="hint">保存后写入 DSH settings.yaml(热加载);密钥仅存本机,启动 DSH 时注入为环境变量。计价单位为 元/百万 token。</div>
+        <div class="row" style="margin-top:10px;gap:10px;flex-wrap:wrap">
+          <div class="field" style="flex:1;min-width:170px"><label class="block" for="apiProvider">默认模型 provider</label><input id="apiProvider" type="text" placeholder="deepseek-official" style="width:100%"></div>
+          <div class="field" style="flex:1;min-width:170px"><label class="block" for="apiModel">默认模型 id</label><input id="apiModel" type="text" placeholder="deepseek-v4-pro" style="width:100%"></div>
+        </div>
+        <div class="card-title" style="margin-top:14px">模型供应商</div>
+        <div class="hint" style="margin-bottom:8px">每行:名称 / 密钥环境变量 / 密钥 / 模型 id(逗号分隔)。新增供应商即可接入自己的 API(OpenAI 兼容)。</div>
+        <div id="apiProviders" class="plugin-list" style="display:flex;flex-direction:column;gap:8px"><span class="muted">加载中…</span></div>
+        <button class="btn outline sm" id="btnApiAddProvider" style="margin-top:8px">添加供应商</button>
+        <div class="card-title" style="margin-top:14px">计价表(每行:模型id | 输入 | 缓存读 | 输出)</div>
+        <textarea id="apiPrices" rows="4" style="width:100%;font-family:var(--font-code);font-size:12px" placeholder="deepseek-v4-pro | 2 | 0.2 | 3"></textarea>
+        <div class="card-title" style="margin-top:14px">ComfyUI 接入</div>
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <div class="field" style="flex:1;min-width:190px"><label class="block" for="comfyUrl">服务地址</label><input id="comfyUrl" type="text" placeholder="http://127.0.0.1:8188" style="width:100%"></div>
+          <div class="field" style="flex:1;min-width:190px"><label class="block" for="comfyKey">API Key(Comfy Cloud,可选)</label><input id="comfyKey" type="password" placeholder="本机留空" style="width:100%"></div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn primary" id="btnApiSave">保存接入配置</button>
+          <span class="muted" style="font-size:12px" id="apiSaveHint"></span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">用量概览 <span class="muted" id="usageMeta" style="font-weight:400"></span></div>
+        <div class="row" style="flex-wrap:wrap;gap:8px" id="usageTotals"></div>
+        <div id="usageBars" style="margin-top:14px;display:flex;gap:6px;align-items:flex-end;height:130px;overflow-x:auto;padding-bottom:4px"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">会话用量</div>
+        <div id="usageSessions" class="plugin-list"><span class="muted">加载中…</span></div>
+      </div>
+    </section>
     <section class="view" id="view-memory" hidden>
       <h2 class="title">对话记忆</h2>
       <div class="card">
@@ -3165,7 +3473,7 @@ const PAGE_HTML = `<div class="app">
 </div>`;
 const PAGE_JS = `(function () {
   var $ = function (s) { return document.querySelector(s); };
-  var views = ['status', 'chat', 'monitor', 'tools', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
+  var views = ['status', 'chat', 'monitor', 'tools', 'usage', 'memory', 'kb', 'xt', 'community', 'settings', 'plugin', 'post'];
   var busy = false;
   var status = null;
   var toastTimer = null;
@@ -4494,6 +4802,161 @@ const PAGE_JS = `(function () {
     if (!confirm('停止全部工具?')) return;
     api('/api/tools/stop-all', { method: 'POST' }).then(function (r) { toast('已停止 ' + (r.stopped || []).length + ' 个工具'); loadTools(); }).catch(function (e) { toast(e.message); });
   });
+  // ---- 接入与用量 ----
+  function fmtTok(n) {
+    n = Number(n) || 0;
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+  function loadUsage() {
+    api('/api/usage').then(renderUsage).catch(function (e) {
+      var t = document.querySelector('#usageTotals');
+      if (t) t.innerHTML = '<span class="muted">加载失败: ' + e.message + '</span>';
+    });
+  }
+  function renderUsage(u) {
+    if (!u) return;
+    var meta = document.querySelector('#usageMeta');
+    if (meta) {
+      meta.textContent = (u.modelId || '未配置模型') + ' · 输入 ' + (u.price ? u.price.input : '?') + ' / 缓存 ' + (u.price ? u.price.cache : '?') + ' / 输出 ' + (u.price ? u.price.output : '?') + ' 元/M' + (u.cached ? ' · 缓存快照(DSH 未运行)' : '') + (u.error ? ' · ' + u.error : '');
+    }
+    var tt = document.querySelector('#usageTotals');
+    if (tt && u.totals) {
+      tt.innerHTML = '<span class="pill info">输入 ' + fmtTok(u.totals.input) + '</span>' +
+        '<span class="pill info">缓存读 ' + fmtTok(u.totals.cacheRead) + '</span>' +
+        '<span class="pill info">输出 ' + fmtTok(u.totals.output) + '</span>' +
+        '<span class="pill ok">费用 ¥' + (u.totals.cost || 0).toFixed(2) + '</span>' +
+        '<span class="pill idle">' + u.totals.turns + ' 轮</span>' +
+        (u.comfy && u.comfy.available && u.comfy.running ? '<span class="pill info">ComfyUI 产出 ' + u.comfy.prompts + ' 次 / ' + u.comfy.images + ' 张图</span>' : '') +
+        (u.cached ? '<span class="pill bad">DSH 未运行,显示上次快照</span>' : '');
+    }
+    var bars = document.querySelector('#usageBars');
+    if (bars && u.days && u.days.length) {
+      var days = u.days.slice(-14);
+      var max = 0;
+      days.forEach(function (d) { if (d.output > max) max = d.output; });
+      bars.innerHTML = days.map(function (d) {
+        var h = max ? Math.max(6, Math.round((d.output / max) * 110)) : 6;
+        return '<div style="flex:none;width:38px;display:flex;flex-direction:column;align-items:center;gap:4px" title="' + d.day + ' · 输出 ' + fmtTok(d.output) + ' · ¥' + (d.cost || 0).toFixed(2) + '">' +
+          '<div style="height:' + h + 'px;width:18px;border-radius:4px 4px 2px 2px;background:var(--brand);opacity:.85"></div>' +
+          '<div class="muted" style="font-size:10px">' + d.day.slice(5) + '</div>' +
+          '</div>';
+      }).join('');
+    }
+    var sl = document.querySelector('#usageSessions');
+    if (sl && u.sessions) {
+      sl.innerHTML = u.sessions.length ? u.sessions.slice(0, 60).map(function (s) {
+        return '<div class="plugin-row"><div class="plugin-info">' +
+          '<div class="plugin-name" style="font-weight:500;font-size:13px">' + escHtml(s.title) + '</div>' +
+          '<div class="plugin-meta">' + s.day + ' · ' + s.turns + ' 轮</div>' +
+          '</div>' +
+          '<div class="row" style="gap:8px;font-size:11px;color:var(--label-secondary)">' +
+          '<span>入 ' + fmtTok(s.input) + '</span><span>缓存 ' + fmtTok(s.cacheRead) + '</span><span>出 ' + fmtTok(s.output) + '</span>' +
+          '<span class="pill ok">¥' + (s.cost || 0).toFixed(2) + '</span>' +
+          '</div></div>';
+      }).join('') : '<span class="muted">暂无会话(DSH 未运行或没有数据)</span>';
+    }
+  }
+  var apiCfgCache = null;
+  function loadApiConfig() {
+    return api('/api/api-config').then(function (c) {
+      apiCfgCache = c;
+      renderApiConfig(c);
+      return c;
+    }).catch(function () {});
+  }
+  function providerRow(name, p) {
+    p = p || { apiKeyEnv: '', models: [] };
+    var models = (p.models || []).map(function (m) { return m.id; }).join(', ');
+    return '<div class="plugin-row api-provider-row" data-pname="' + escHtml(name) + '" style="align-items:center;flex-wrap:wrap;gap:6px">' +
+      '<input class="api-pname" value="' + escHtml(name) + '" placeholder="供应商名" style="width:120px">' +
+      '<input class="api-penv" value="' + escHtml(p.apiKeyEnv || '') + '" placeholder="密钥环境变量" style="width:150px">' +
+      '<input class="api-pkey" type="password" value="' + escHtml((apiCfgCache && apiCfgCache.apiKeys && apiCfgCache.apiKeys[p.apiKeyEnv]) || '') + '" placeholder="密钥(留空不覆盖)" style="width:190px">' +
+      '<input class="api-pmodels" value="' + escHtml(models) + '" placeholder="模型 id,逗号分隔" style="flex:1;min-width:180px">' +
+      '<button class="btn outline sm" data-apidel="' + escHtml(name) + '">删除</button>' +
+      '</div>';
+  }
+  function renderApiConfig(c) {
+    if (!c) return;
+    $('#apiProvider').value = (c.defaultModel && c.defaultModel.provider) || '';
+    $('#apiModel').value = (c.defaultModel && c.defaultModel.model) || '';
+    $('#comfyUrl').value = (c.comfy && c.comfy.url) || '';
+    $('#comfyKey').value = (c.comfy && c.comfy.apiKey) || '';
+    var names = Object.keys(c.providers || {});
+    var el = document.querySelector('#apiProviders');
+    if (el) el.innerHTML = names.length ? names.map(function (n) { return providerRow(n, c.providers[n]); }).join('') : '<span class="muted">暂无供应商,点下方按钮添加</span>';
+    var prices = [];
+    for (var id of Object.keys(c.prices || {})) {
+      var p = c.prices[id];
+      prices.push(id + ' | ' + (p.input || 0) + ' | ' + (p.cache || 0) + ' | ' + (p.output || 0));
+    }
+    $('#apiPrices').value = prices.join('\\n');
+  }
+  function collectApiBody() {
+    var providers = {};
+    document.querySelectorAll('.api-provider-row').forEach(function (row) {
+      var name = (row.querySelector('.api-pname').value || '').trim();
+      if (!name) return;
+      var env = (row.querySelector('.api-penv').value || '').trim();
+      var models = (row.querySelector('.api-pmodels').value || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+      var prev = (apiCfgCache && apiCfgCache.providers && apiCfgCache.providers[name]) || null;
+      var prevModels = {};
+      if (prev) prev.models.forEach(function (m) { prevModels[m.id] = m; });
+      providers[name] = {
+        apiKeyEnv: env || (name.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY'),
+        models: models.map(function (id) {
+          return prevModels[id] || { id: id, name: id, contextWindow: 131072, maxTokens: 32768 };
+        }),
+      };
+    });
+    var apiKeys = {};
+    document.querySelectorAll('.api-provider-row').forEach(function (row) {
+      var env = (row.querySelector('.api-penv').value || '').trim();
+      var key = (row.querySelector('.api-pkey').value || '').trim();
+      if (env && key) apiKeys[env] = key;
+    });
+    var prices = {};
+    $('#apiPrices').value.split('\\n').forEach(function (line) {
+      var parts = line.split('|').map(function (x) { return x.trim(); });
+      if (parts.length >= 4 && parts[0]) {
+        prices[parts[0]] = { input: Number(parts[1]) || 0, cache: Number(parts[2]) || 0, output: Number(parts[3]) || 0 };
+      }
+    });
+    return {
+      defaultModel: { provider: $('#apiProvider').value.trim(), model: $('#apiModel').value.trim() },
+      providers: providers,
+      apiKeys: apiKeys,
+      prices: prices,
+      comfy: { url: $('#comfyUrl').value.trim(), apiKey: $('#comfyKey').value.trim() },
+    };
+  }
+  $('#btnApiSave').addEventListener('click', function () {
+    api('/api/api-config/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(collectApiBody()),
+    }).then(function () {
+      toast('接入配置已保存并写入 DSH settings.yaml');
+      loadApiConfig();
+    }).catch(function (e) { toast(e.message); });
+  });
+  $('#btnApiAddProvider').addEventListener('click', function () {
+    var el = document.querySelector('#apiProviders');
+    if (el) el.insertAdjacentHTML('beforeend', providerRow('新供应商', { apiKeyEnv: '', models: [] }));
+  });
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    while (t && t !== document && !(t.getAttribute && t.getAttribute('data-apidel'))) t = t.parentNode;
+    if (t && t !== document) {
+      if (!confirm('删除供应商 ' + t.getAttribute('data-apidel') + '?')) return;
+      t.closest('.api-provider-row').remove();
+      toast('已从界面移除;保存后生效');
+    }
+  });
+  $('#btnUsageRefresh').addEventListener('click', function () {
+    api('/api/usage/refresh', { method: 'POST' }).then(function (u) { renderUsage(u); toast('已刷新'); }).catch(function (e) { toast(e.message); });
+  });
   // ---- 远程遥控(小程序) ----
   function renderRelay(st) {
     if (!st) return;
@@ -4712,8 +5175,11 @@ const PAGE_JS = `(function () {
   loadKb();
   loadRelay();
   loadTools();
+  loadApiConfig();
+  loadUsage();
   setInterval(loadRelay, 3000);
   setInterval(loadTools, 3000);
+  setInterval(loadUsage, 60000);
   setInterval(loadMonitor, 5000);
   setInterval(function () { if (curSession) loadDshHistory(); }, 5000);
   setInterval(loadDshSessions, 15000);
@@ -4981,6 +5447,35 @@ const server = http.createServer(async (req, res) => {
         }
       }
       return sendJSON(res, 200, syncMcpPatch());
+    }
+    // API 接入与用量管理
+    if (p === '/api/api-config' && m === 'GET') {
+      return sendJSON(res, 200, apiConfigSnapshot());
+    }
+    if (p === '/api/api-config/save' && m === 'POST') {
+      const body = JSON.parse(await readBody(req) || '{}');
+      try { return sendJSON(res, 200, { ok: true, config: saveApiConfig(body) }); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (p === '/api/usage' && m === 'GET') {
+      try { return sendJSON(res, 200, await usageScan(false)); }
+      catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/usage/refresh' && m === 'POST') {
+      try { return sendJSON(res, 200, await usageScan(true)); }
+      catch (e) { return sendJSON(res, 502, { error: e.message }); }
+    }
+    if (p === '/api/usage/export' && m === 'GET') {
+      try {
+        const u = await usageScan(false);
+        const csv = usageCsv(u);
+        res.writeHead(200, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="dsh-usage.csv"',
+          'Content-Length': Buffer.byteLength(csv),
+        });
+        return res.end(csv);
+      } catch (e) { return sendJSON(res, 502, { error: e.message }); }
     }
     if (p === '/api/tools/restart-dsh' && m === 'POST') {
       const st = await getStatus();
